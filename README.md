@@ -1,4 +1,4 @@
-# MasterForex-V MultiTF Indicator for MetaTrader 5
+# MasterForex-V MultiTF Indicator for MetaTrader 5/
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![MetaTrader 5](https://img.shields.io/badge/platform-MetaTrader5-blue.svg)](https://www.metatrader5.com/)
