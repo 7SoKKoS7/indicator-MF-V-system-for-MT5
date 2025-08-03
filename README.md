@@ -48,20 +48,37 @@
 
 ---
 
-## Скриншоты
+## Структура проекта
 
-| Индикатор на графике | Пример сигналов |
-|:---:|:---:|
-| ![pivot](./пример%20MF_PIVOT_H1.png) | ![buy-signal](./пример%20значка%20разворот%20и%20сигнал%20на%20покупку.png) |
+- `MasterForex_Pivot_my_v3.mq5` — основной файл индикатора (исходный код)
+- `книга 3.pdf` — третья книга MasterForex-V (методика, теория, алгоритм)
+- `README.md` — этот файл
+- **История цен EUR/USD (для тестов):**
+    - `EURUSDDaily.csv`
+    - `EURUSDH1.csv`
+    - `EURUSDH4.csv`
+    - `EURUSDM1.csv`
+    - `EURUSDM5.csv`
+    - `EURUSDM15.csv`
+    - `EURUSDM30.csv`
+    - `EURUSDMonthly.csv`
+    - `EURUSDWeekly.csv`
+- `пример графика как сейчас работает-.png` — актуальный скриншот индикатора в MetaTrader
 
 ---
 
-## Структура проекта
+### История цен для тестирования
 
-- `MasterForex_Pivot_my_v2.mq5` — основной файл индикатора (исходный код)
-- `/docs` — PDF-описания, методика MF-V, алгоритм
-- `/img` — примеры скринов, иллюстрации
-- `README.md` — этот файл
+В репозитории представлены файлы с историческими котировками EUR/USD для всех основных таймфреймов.  
+**Рекомендуется:** тестировать работу индикатора, оптимизацию, доработки и сравнение сигналов именно на этих исторических данных. Это позволяет объективно проверять эффективность всех стратегий MF-V на практике.
+
+---
+
+## Скриншоты
+
+| Индикатор на графике (пример) |
+|:---:|
+| ![пример графика](./пример%20графика%20как%20сейчас%20работает-.png) |
 
 ---
 
@@ -112,7 +129,9 @@
 
 ## Источники и ссылки
 
-- [MasterForex-V: Методика и алгоритм](https://www.masterforex-v.org/mf_books/book1.html)
+- [MasterForex-V: Книга 1 (онлайн)](https://www.masterforex-v.org/mf_books/book1.html)
+- [MasterForex-V: Книга 2 (онлайн)](https://www.masterforex-v.org/mf_books/book2.html)
+- [MasterForex-V: Книга 3 (PDF на GitHub)](https://github.com/7SoKKoS7/indicator-MF-V-system-for-MT5/blob/main/%D0%BA%D0%BD%D0%B8%D0%B3%D0%B0%203.pdf)
 - [MQL5 ZigZag Docs](https://www.mql5.com/en/docs/indicators/zigzag)
 - [MQL5 Multi-TF Articles](https://www.mql5.com/en/articles/2837)
 
