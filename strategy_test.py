@@ -1,3 +1,5 @@
+# python strategy_test.py - -file EURUSDH1.csv - -tf
+
 import pandas as pd
 import numpy as np
 from pathlib import Path
