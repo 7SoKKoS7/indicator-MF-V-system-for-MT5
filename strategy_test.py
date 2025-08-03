@@ -5,9 +5,21 @@ import numpy as np
 from pathlib import Path
 import argparse
 from datetime import datetime
+import codecs
 
 
 def load_data(filepath: str, encoding: str) -> pd.DataFrame:
+    """Load CSV data with optional encoding auto-detection."""
+    if encoding == 'auto':
+        with open(filepath, 'rb') as f:
+            start = f.read(4)
+        if start.startswith(codecs.BOM_UTF16_LE) or start.startswith(codecs.BOM_UTF16_BE):
+            encoding = 'utf-16'
+        elif start.startswith(codecs.BOM_UTF8):
+            encoding = 'utf-8-sig'
+        else:
+            encoding = 'utf-8'
+
     df = pd.read_csv(
         filepath,
         names=["time", "open", "high", "low", "close", "tick_volume", "real_volume"],
@@ -124,8 +136,8 @@ if __name__ == '__main__':
     )
     parser.add_argument(
         '--encoding',
-        default='utf-8',
-        help='File encoding for CSV files (default: utf-8)',
+        default='auto',
+        help='File encoding for CSV files or "auto" to detect (default: auto)',
     )
     args = parser.parse_args()
 
