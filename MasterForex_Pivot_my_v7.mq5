@@ -1,10 +1,10 @@
 //+------------------------------------------------------------------+
-//| MasterForex-V MultiTF Indicator v6.0                             |
-//| Индикатор с подтвержденными MF-pivot и классическими уровнями   |
+//| MasterForex-V MultiTF Indicator v7.0                             |
+//| Индикатор с подтвержденными MF-pivot и дополнительными сигналами|
 //+------------------------------------------------------------------+
 #property indicator_chart_window
 #property indicator_buffers 6
-#property indicator_plots   4
+#property indicator_plots   6
 
 //--- Buy arrow / Стрелка покупки
 #property indicator_label1  "BuyArrow"
@@ -20,13 +20,13 @@
 #property indicator_style2  STYLE_SOLID
 #property indicator_width2  2
 
-double BuyArrowBuffer[];
-double SellArrowBuffer[];
-
-//--- For MF-pivot (ZigZag) / Для MF-pivot (ZigZag)
-double mfPivotH1[];
-double mfPivotM15[];
-double mfPivotM5[];
+//--- Buffers for various signals / Буферы сигналов
+double BuyArrowBuffer[];    // сильный сигнал покупки
+double SellArrowBuffer[];   // сильный сигнал продажи
+double EarlyBuyBuffer[];    // ранний вход покупка
+double EarlySellBuffer[];   // ранний вход продажа
+double ExitBuffer[];        // крестик выхода
+double ReverseBuffer[];     // метка разворота
 
 //--- For new levels on H4 and D1 / Для H4 и D1 новых уровней
 double mfPivotH4;
@@ -47,15 +47,35 @@ string objS2    = "MF_ClassicS2";
 //+------------------------------------------------------------------+
 int OnInit()
   {
-   SetIndexBuffer(0, BuyArrowBuffer, INDICATOR_DATA);
-   SetIndexBuffer(1, SellArrowBuffer, INDICATOR_DATA);
-   ArraySetAsSeries(BuyArrowBuffer, true);
-   ArraySetAsSeries(SellArrowBuffer, true);
+   SetIndexBuffer(0, BuyArrowBuffer,   INDICATOR_DATA);
+   SetIndexBuffer(1, SellArrowBuffer,  INDICATOR_DATA);
+   SetIndexBuffer(2, EarlyBuyBuffer,   INDICATOR_DATA);
+   SetIndexBuffer(3, EarlySellBuffer,  INDICATOR_DATA);
+   SetIndexBuffer(4, ExitBuffer,       INDICATOR_DATA);
+   SetIndexBuffer(5, ReverseBuffer,    INDICATOR_DATA);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "MasterForex-V MultiTF v6.0");
+   ArraySetAsSeries(BuyArrowBuffer,   true);
+   ArraySetAsSeries(SellArrowBuffer,  true);
+   ArraySetAsSeries(EarlyBuyBuffer,   true);
+   ArraySetAsSeries(EarlySellBuffer,  true);
+   ArraySetAsSeries(ExitBuffer,       true);
+   ArraySetAsSeries(ReverseBuffer,    true);
 
-   PlotIndexSetInteger(0, PLOT_ARROW, 233); // up arrow (Wingdings) / стрелка вверх
-   PlotIndexSetInteger(1, PLOT_ARROW, 234); // down arrow (Wingdings) / стрелка вниз
+   IndicatorSetString(INDICATOR_SHORTNAME, "MasterForex-V MultiTF v7.0");
+
+   PlotIndexSetInteger(0, PLOT_ARROW, 233); // up arrow
+   PlotIndexSetInteger(1, PLOT_ARROW, 234); // down arrow
+   PlotIndexSetInteger(2, PLOT_ARROW, 241); // early up
+   PlotIndexSetInteger(3, PLOT_ARROW, 242); // early down
+   PlotIndexSetInteger(4, PLOT_ARROW, 251); // cross exit
+   PlotIndexSetInteger(5, PLOT_ARROW, 221); // reversal mark
+
+   PlotIndexSetInteger(0, PLOT_LINE_COLOR, clrLime);
+   PlotIndexSetInteger(1, PLOT_LINE_COLOR, clrRed);
+   PlotIndexSetInteger(2, PLOT_LINE_COLOR, clrLime);
+   PlotIndexSetInteger(3, PLOT_LINE_COLOR, clrRed);
+   PlotIndexSetInteger(4, PLOT_LINE_COLOR, clrGray);
+   PlotIndexSetInteger(5, PLOT_LINE_COLOR, clrAqua);
 
    return(INIT_SUCCEEDED);
   }
@@ -70,13 +90,22 @@ double GetLastPivot(string symbol, ENUM_TIMEFRAMES tf)
    if(handle == INVALID_HANDLE) return 0.0;
 
    double zzBuffer[];
-   if(CopyBuffer(handle, 0, 0, 200, zzBuffer) <= 0) return 0.0;
+   if(CopyBuffer(handle, 0, 0, 200, zzBuffer) <= 0)
+     {
+      IndicatorRelease(handle);
+      return 0.0;
+     }
 
-   for(int i=0; i<200; i++)
+   for(int i=1; i<200; i++) // start from 1 to skip current bar
      {
       if(zzBuffer[i] != 0.0)
-         return zzBuffer[i];
+        {
+         double val = zzBuffer[i];
+         IndicatorRelease(handle);
+         return val;
+        }
      }
+   IndicatorRelease(handle);
    return 0.0;
   }
 
@@ -158,12 +187,27 @@ int OnCalculate(const int rates_total,
                 const double &price[])
   {
    ArraySetAsSeries(price, true);
-   ArrayResize(BuyArrowBuffer, rates_total);
-   ArrayResize(SellArrowBuffer, rates_total);
-   ArrayInitialize(BuyArrowBuffer, EMPTY_VALUE);
-   ArrayInitialize(SellArrowBuffer, EMPTY_VALUE);
+   ArrayResize(BuyArrowBuffer,   rates_total);
+   ArrayResize(SellArrowBuffer,  rates_total);
+   ArrayResize(EarlyBuyBuffer,   rates_total);
+   ArrayResize(EarlySellBuffer,  rates_total);
+   ArrayResize(ExitBuffer,       rates_total);
+   ArrayResize(ReverseBuffer,    rates_total);
+
+   BuyArrowBuffer[0]   = EMPTY_VALUE;
+   SellArrowBuffer[0]  = EMPTY_VALUE;
+   EarlyBuyBuffer[0]   = EMPTY_VALUE;
+   EarlySellBuffer[0]  = EMPTY_VALUE;
+   ExitBuffer[0]       = EMPTY_VALUE;
+   ReverseBuffer[0]    = EMPTY_VALUE;
 
    double price_now = price[0];
+
+   // state variables / переменные состояния
+   static int    lastSignal   = 0;   // 1 buy, -1 sell
+   static double lastPivot    = 0.0; // pivot corresponding to last signal
+   static int    lastTrendH1  = 0;
+   static int    lastTrendM15 = 0;
 
    // Получаем MF-pivot для каждого ТФ / Retrieve MF-pivot for each timeframe
    double pivotH1  = GetLastPivot(_Symbol, PERIOD_H1);
@@ -201,11 +245,47 @@ int OnCalculate(const int rates_total,
    DrawRowLabel("MFV_STATUS_H4",    levelH4,     90);
    DrawRowLabel("MFV_STATUS_D1",    levelD1,     110);
 
-   // Draw entry arrows / Рисуем стрелки входа
+   // Draw entry arrows and early signals / Стрелки входа и ранние сигналы
    if(trendH1 == 1 && trendM15 == 1 && trendM5 == 1)
-      BuyArrowBuffer[0] = price_now - 10 * _Point;
+     {
+      BuyArrowBuffer[1] = price[1] - 10 * _Point;
+      lastSignal = 1;
+      lastPivot  = pivotH1;
+     }
    else if(trendH1 == -1 && trendM15 == -1 && trendM5 == -1)
-      SellArrowBuffer[0] = price_now + 10 * _Point;
+     {
+      SellArrowBuffer[1] = price[1] + 10 * _Point;
+      lastSignal = -1;
+      lastPivot  = pivotH1;
+     }
+   else if(trendH1 == 1 && trendM5 == 1 && trendM15 != 1)
+     {
+      EarlyBuyBuffer[1] = price[1] - 10 * _Point;
+     }
+   else if(trendH1 == -1 && trendM5 == -1 && trendM15 != -1)
+     {
+      EarlySellBuffer[1] = price[1] + 10 * _Point;
+     }
+
+   // Exit cross when price breaks pivot against position / Крестик выхода при пробое пивота
+   if(lastSignal == 1 && price_now < lastPivot)
+     {
+      ExitBuffer[1] = price[1];
+      lastSignal = 0;
+     }
+   else if(lastSignal == -1 && price_now > lastPivot)
+     {
+      ExitBuffer[1] = price[1];
+      lastSignal = 0;
+     }
+
+   // Reversal marker on confirmed change of H1 and M15 / Метка разворота
+   if(trendH1 == trendM15 && trendH1 != 0 && trendH1 != lastTrendH1 && lastTrendH1 != 0)
+     {
+      ReverseBuffer[1] = price[1];
+     }
+   lastTrendH1  = trendH1;
+   lastTrendM15 = trendM15;
 
    // Draw MF-pivot lines / Рисуем линии MF-pivot
    DrawOrUpdateLine("MF_PIVOT_H1",  pivotH1,  clrBlue,     2);
