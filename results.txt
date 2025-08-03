@@ -1,3 +1,3 @@
-File: EURUSDH1.csv | TF: H1
-Signals: 100026
-Success rate: 76.57%
+File: EURUSDM15.csv | TF: M15
+Signals: 99890
+Success rate: 64.90%
