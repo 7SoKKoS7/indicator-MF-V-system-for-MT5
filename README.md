@@ -46,6 +46,7 @@
 - `книга 3.pdf` — теория, описание MF-pivot, алгоритмы
 - `Алгоритм индикатора MasterForex‑V для MetaTrader 5.pdf` — техническое описание
 - `README.md` — описание проекта
+- `mfv_v6_emulator.py` — Python-эмулятор версии 6.0.2, проверяющий сигналы по CSV-данным
 
 **Исторические данные EUR/USD:**
 - `EURUSDM1.csv`, `EURUSDM5.csv`, `EURUSDM15.csv`, `EURUSDM30.csv`
