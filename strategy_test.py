@@ -4,13 +4,16 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import argparse
+from datetime import datetime
 
 
-def load_data(filepath: str) -> pd.DataFrame:
-    df = pd.read_csv(filepath,
-                     names=["time", "open", "high", "low", "close", "tick_volume", "real_volume"],
-                     parse_dates=["time"],
-                     encoding='utf-16')
+def load_data(filepath: str, encoding: str) -> pd.DataFrame:
+    df = pd.read_csv(
+        filepath,
+        names=["time", "open", "high", "low", "close", "tick_volume", "real_volume"],
+        parse_dates=["time"],
+        encoding=encoding,
+    )
     df.sort_values('time', inplace=True)
     df.reset_index(drop=True, inplace=True)
     return df
@@ -90,19 +93,46 @@ def evaluate_signals(df: pd.DataFrame, look_ahead: int = 12, threshold: float = 
     return len(results), success_rate
 
 
-def run(file_path: str, tf_label: str):
-    df = load_data(file_path)
+def run(file_path: str, tf_label: str, encoding: str):
+    df = load_data(file_path, encoding)
     df = zigzag(df)
     count, success = evaluate_signals(df)
-    msg = f"File: {Path(file_path).name} | TF: {tf_label}\nSignals: {count}\nSuccess rate: {success:.2f}%"
+    msg = (
+        f"File: {Path(file_path).name} | TF: {tf_label}\n"
+        f"Signals: {count}\nSuccess rate: {success:.2f}%"
+    )
     print(msg)
-    with open("results.txt", "w") as f:
-        f.write(msg)
+    timestamp = datetime.now().isoformat()
+    with open("results.txt", "a", encoding="utf-8") as f:
+        f.write(f"{timestamp}\n{msg}\n")
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Single timeframe ZigZag trend strategy test.')
-    parser.add_argument('--file', required=True, help='Path to CSV file with historical data')
-    parser.add_argument('--tf', required=True, help='Label of the timeframe (e.g., M5, M15, H1)')
+    parser = argparse.ArgumentParser(
+        description="Single timeframe ZigZag trend strategy test."
+    )
+    parser.add_argument(
+        '--file',
+        required=True,
+        nargs='+',
+        help='Path(s) to CSV file(s) with historical data',
+    )
+    parser.add_argument(
+        '--tf',
+        nargs='+',
+        help='Label(s) of the timeframe(s) (e.g., M5, M15, H1)',
+    )
+    parser.add_argument(
+        '--encoding',
+        default='utf-8',
+        help='File encoding for CSV files (default: utf-8)',
+    )
     args = parser.parse_args()
-    run(args.file, args.tf)
+
+    tf_list = args.tf if args.tf else [None] * len(args.file)
+    if len(tf_list) != len(args.file):
+        raise ValueError('Number of --tf labels must match number of --file paths')
+
+    for fp, tf in zip(args.file, tf_list):
+        tf_label = tf if tf else Path(fp).stem
+        run(fp, tf_label, args.encoding)
