@@ -1,5 +1,3 @@
-# python strategy_test.py - -file EURUSDH1.csv - -tf
-
 import pandas as pd
 import numpy as np
 from pathlib import Path
@@ -85,14 +83,32 @@ def zigzag(df: pd.DataFrame, deviation: float = 0.0005) -> pd.DataFrame:
     return df
 
 
-def evaluate_signals(df: pd.DataFrame, look_ahead: int = 12, threshold: float = 0.0005) -> tuple[int, float]:
-    df['signal'] = np.where(df['trend'] == 1, 'BUY',
-                    np.where(df['trend'] == -1, 'SELL', None))
+# Minimum profit threshold in price units (e.g. 0.0030 ≈ 30 pips for EURUSD)
+DEFAULT_THRESHOLD = 0.0030
+
+
+def evaluate_signals(
+    df: pd.DataFrame,
+    look_ahead: int = 12,
+    threshold: float = DEFAULT_THRESHOLD,
+) -> tuple[int, float]:
+    """Evaluate signals when all three timeframes confirm the trend."""
+    cond_buy = (
+        (df['trend_tf1'] == 1)
+        & (df['trend_tf2'] == 1)
+        & (df['trend_tf3'] == 1)
+    )
+    cond_sell = (
+        (df['trend_tf1'] == -1)
+        & (df['trend_tf2'] == -1)
+        & (df['trend_tf3'] == -1)
+    )
+    df['signal'] = np.where(cond_buy, 'BUY', np.where(cond_sell, 'SELL', None))
 
     results = []
     for idx, row in df.dropna(subset=['signal']).iterrows():
         price = row['close']
-        future = df['close'].iloc[idx+1: idx+1+look_ahead]
+        future = df['close'].iloc[idx + 1 : idx + 1 + look_ahead]
         if len(future) < look_ahead:
             continue
         if row['signal'] == 'BUY':
@@ -105,13 +121,41 @@ def evaluate_signals(df: pd.DataFrame, look_ahead: int = 12, threshold: float = 
     return len(results), success_rate
 
 
-def run(file_path: str, tf_label: str, encoding: str):
-    df = load_data(file_path, encoding)
+def prepare_dataframe(filepath: str, encoding: str) -> pd.DataFrame:
+    """Load CSV and compute ZigZag trend."""
+    df = load_data(filepath, encoding)
     df = zigzag(df)
-    count, success = evaluate_signals(df)
+    return df[['time', 'close', 'trend']]
+
+
+def merge_timeframes(dfs: list[pd.DataFrame]) -> pd.DataFrame:
+    """Merge three dataframes by time using backward fill for higher TFs."""
+    base = dfs[0].rename(columns={'trend': 'trend_tf1', 'close': 'close'})
+    for i, df in enumerate(dfs[1:], start=2):
+        temp = df.rename(columns={'trend': f'trend_tf{i}'})[['time', f'trend_tf{i}']]
+        base = pd.merge_asof(
+            base,
+            temp.sort_values('time'),
+            on='time',
+            direction='backward',
+        )
+    return base
+
+
+def run(
+    file_paths: list[str],
+    tf_labels: list[str],
+    encoding: str,
+    threshold: float = DEFAULT_THRESHOLD,
+):
+    dfs = [prepare_dataframe(fp, encoding) for fp in file_paths]
+    merged = merge_timeframes(dfs)
+    count, success = evaluate_signals(merged, threshold=threshold)
+    files_str = ', '.join(Path(p).name for p in file_paths)
+    tfs_str = '/'.join(tf_labels)
     msg = (
-        f"File: {Path(file_path).name} | TF: {tf_label}\n"
-        f"Signals: {count}\nSuccess rate: {success:.2f}%"
+        f"Files: {files_str} | TFs: {tfs_str}\n"
+        f"Signals: {count}\nSuccess rate: {success:.2f}% (>{threshold})"
     )
     print(msg)
     timestamp = datetime.now().isoformat()
@@ -121,30 +165,34 @@ def run(file_path: str, tf_label: str, encoding: str):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description="Single timeframe ZigZag trend strategy test."
+        description="Triple timeframe ZigZag trend confirmation test.",
     )
     parser.add_argument(
         '--file',
         required=True,
-        nargs='+',
-        help='Path(s) to CSV file(s) with historical data',
+        nargs=3,
+        help='Paths to three CSV files (from lowest to highest timeframe)',
     )
     parser.add_argument(
         '--tf',
-        nargs='+',
-        help='Label(s) of the timeframe(s) (e.g., M5, M15, H1)',
+        nargs=3,
+        help='Labels of the timeframes in the same order as --file',
     )
     parser.add_argument(
         '--encoding',
         default='auto',
         help='File encoding for CSV files or "auto" to detect (default: auto)',
     )
+    parser.add_argument(
+        '--threshold',
+        type=float,
+        default=DEFAULT_THRESHOLD,
+        help='Minimum profit threshold in price units (default: %(default)s)',
+    )
     args = parser.parse_args()
 
-    tf_list = args.tf if args.tf else [None] * len(args.file)
-    if len(tf_list) != len(args.file):
-        raise ValueError('Number of --tf labels must match number of --file paths')
+    tf_list = args.tf if args.tf else [Path(fp).stem for fp in args.file]
+    if len(tf_list) != 3:
+        raise ValueError('Exactly three --tf labels must be provided')
 
-    for fp, tf in zip(args.file, tf_list):
-        tf_label = tf if tf else Path(fp).stem
-        run(fp, tf_label, args.encoding)
+    run(args.file, tf_list, args.encoding, threshold=args.threshold)
