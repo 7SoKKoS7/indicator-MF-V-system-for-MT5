@@ -117,10 +117,23 @@ double GetLastPivot(string symbol, ENUM_TIMEFRAMES tf, int &handle)
         }
      }
 
+   int bars = BarsCalculated(handle);
+   if(bars <= 0)
+     {
+      Print("BarsCalculated ZigZag tf=", tf, " result=", bars, " err=", GetLastError());
+      return 0.0;
+     }
+
    double zzBuffer[];
    if(CopyBuffer(handle, 0, 0, 200, zzBuffer) <= 0)
      {
-      Print("CopyBuffer ZigZag failed tf=", tf, " err=", GetLastError());
+      int err = GetLastError();
+      Print("CopyBuffer ZigZag failed tf=", tf, " err=", err);
+      if(err != 0)
+        {
+         IndicatorRelease(handle);
+         handle = INVALID_HANDLE;
+        }
       return 0.0;
      }
 
