@@ -56,4 +56,3 @@ File: EURUSDMonthly.csv | TF: MN
 Signals: 642
 Success rate: 81.62%
 2025-08-05T21:13:04+00:00
-
