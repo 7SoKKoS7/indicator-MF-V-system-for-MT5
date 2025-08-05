@@ -1,37 +1,4 @@
-File: EURUSDM15.csv | TF: M15
-Signals: 99890
-Success rate: 64.90%2025-08-05T20:54:57.019215
-File: EURUSDM5.csv | TF: M5
-Signals: 99923
-Success rate: 48.00%
-2025-08-05T20:55:16.425286
-File: EURUSDM15.csv | TF: M15
-Signals: 99890
-Success rate: 64.90%
-2025-08-05T20:55:36.009806
-File: EURUSDM30.csv | TF: M30
-Signals: 100176
-Success rate: 71.07%
-2025-08-05T20:55:54.650168
-File: EURUSDH1.csv | TF: H1
-Signals: 100026
-Success rate: 76.57%
-2025-08-05T20:56:03.361486
-File: EURUSDH4.csv | TF: H4
-Signals: 48308
-Success rate: 81.01%
-2025-08-05T20:56:05.922844
-File: EURUSDDaily.csv | TF: D1
-Signals: 14000
-Success rate: 81.54%
-2025-08-05T20:56:06.444582
-File: EURUSDWeekly.csv | TF: W1
-Signals: 2828
-Success rate: 82.39%
-2025-08-05T20:56:06.562329
-File: EURUSDMonthly.csv | TF: MN
-Signals: 642
-Success rate: 81.62%
+
 2025-08-05T21:11:16.860478
 File: EURUSDM5.csv | TF: M5
 Signals: 99923
@@ -89,35 +56,3 @@ File: EURUSDMonthly.csv | TF: MN
 Signals: 642
 Success rate: 81.62%
 2025-08-05T21:13:04+00:00
-2025-08-05T21:32:49.737019
-File: EURUSDM5.csv | TF: M5
-Signals: 99923
-Success rate: 48.00%
-2025-08-05T21:33:17.797395
-File: EURUSDM15.csv | TF: M15
-Signals: 99890
-Success rate: 64.90%
-2025-08-05T21:33:45.724952
-File: EURUSDM30.csv | TF: M30
-Signals: 100176
-Success rate: 71.07%
-2025-08-05T21:34:13.303380
-File: EURUSDH1.csv | TF: H1
-Signals: 100026
-Success rate: 76.57%
-2025-08-05T21:34:26.702885
-File: EURUSDH4.csv | TF: H4
-Signals: 48308
-Success rate: 81.01%
-2025-08-05T21:34:30.575308
-File: EURUSDDaily.csv | TF: D1
-Signals: 14000
-Success rate: 81.54%
-2025-08-05T21:34:31.394411
-File: EURUSDWeekly.csv | TF: W1
-Signals: 2828
-Success rate: 82.39%
-2025-08-05T21:34:31.582722
-File: EURUSDMonthly.csv | TF: MN
-Signals: 642
-Success rate: 81.62%
