@@ -117,6 +117,7 @@ double GetLastPivot(string symbol, ENUM_TIMEFRAMES tf, int &handle)
         }
      }
 
+
    int bars = BarsCalculated(handle);
    if(bars <= 0)
      {
@@ -125,6 +126,7 @@ double GetLastPivot(string symbol, ENUM_TIMEFRAMES tf, int &handle)
      }
 
    double zzBuffer[];
+   ResetLastError();
    if(CopyBuffer(handle, 0, 0, 200, zzBuffer) <= 0)
      {
       int err = GetLastError();
