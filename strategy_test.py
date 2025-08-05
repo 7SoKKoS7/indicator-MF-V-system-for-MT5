@@ -85,7 +85,15 @@ def zigzag(df: pd.DataFrame, deviation: float = 0.0005) -> pd.DataFrame:
     return df
 
 
-def evaluate_signals(df: pd.DataFrame, look_ahead: int = 12, threshold: float = 0.0005) -> tuple[int, float]:
+# Minimum profit threshold in price units (e.g. 0.0030 ≈ 30 pips for EURUSD)
+DEFAULT_THRESHOLD = 0.0030
+
+
+def evaluate_signals(
+    df: pd.DataFrame,
+    look_ahead: int = 12,
+    threshold: float = DEFAULT_THRESHOLD,
+) -> tuple[int, float]:
     df['signal'] = np.where(df['trend'] == 1, 'BUY',
                     np.where(df['trend'] == -1, 'SELL', None))
 
@@ -105,13 +113,13 @@ def evaluate_signals(df: pd.DataFrame, look_ahead: int = 12, threshold: float = 
     return len(results), success_rate
 
 
-def run(file_path: str, tf_label: str, encoding: str):
+def run(file_path: str, tf_label: str, encoding: str, threshold: float = DEFAULT_THRESHOLD):
     df = load_data(file_path, encoding)
     df = zigzag(df)
-    count, success = evaluate_signals(df)
+    count, success = evaluate_signals(df, threshold=threshold)
     msg = (
         f"File: {Path(file_path).name} | TF: {tf_label}\n"
-        f"Signals: {count}\nSuccess rate: {success:.2f}%"
+        f"Signals: {count}\nSuccess rate: {success:.2f}% (>{threshold})"
     )
     print(msg)
     timestamp = datetime.now().isoformat()
@@ -139,6 +147,12 @@ if __name__ == '__main__':
         default='auto',
         help='File encoding for CSV files or "auto" to detect (default: auto)',
     )
+    parser.add_argument(
+        '--threshold',
+        type=float,
+        default=DEFAULT_THRESHOLD,
+        help='Minimum profit threshold in price units (default: %(default)s)',
+    )
     args = parser.parse_args()
 
     tf_list = args.tf if args.tf else [None] * len(args.file)
@@ -147,4 +161,4 @@ if __name__ == '__main__':
 
     for fp, tf in zip(args.file, tf_list):
         tf_label = tf if tf else Path(fp).stem
-        run(fp, tf_label, args.encoding)
+        run(fp, tf_label, args.encoding, threshold=args.threshold)
