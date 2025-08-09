@@ -6,12 +6,15 @@
 //+------------------------------------------------------------------+
 #property copyright "MasterForex-V"
 #property link      "https://www.masterforex-v.org/"
-#property version   "8.23.08"
+#property version   "8.230"
 #property strict
 
 #property indicator_chart_window
 #property indicator_buffers 9
 #property indicator_plots   9
+
+// --- Breakout confirmation settings
+enum ConfirmMode { Confirm_Off, Confirm_StrongOnly, Confirm_StrongAndNormal, Confirm_All };
 
 //--- Input Parameters / Входные параметры
 input group "=== Основные настройки ==="
@@ -34,6 +37,30 @@ input int    MinTrendStrength = 2;            // Минимальная сила
 input int    MinEarlyTrendStrength = 1;       // Минимальная сила тренда для ранних входов (1-3)
 input bool   UseRiskManagement = true;        // Использовать управление рисками
 input double MaxRiskPercent = 2.0;            // Максимальный риск в %
+
+input group "=== Подтверждение пробоя Pivot (H1) ==="
+input ConfirmMode BreakoutConfirm = Confirm_StrongOnly; // Режим подтверждения
+input int    H1ClosesNeeded       = 2;     // Сколько H1-закрытий за pivot (1-2)
+input int    RetestWindowM15      = 12;    // Окно ретеста в M15-барах (до 3 ч)
+input double RetestTolATR_M15     = 0.25;  // Допуск касания: ±0.25*ATR(M15)
+input double WickRejectMin        = 0.60;  // Мин. доля тени в диапазоне бара
+input bool   UseRetestVolume      = true;  // Учитывать объём на ретесте
+input double RetestVolMult        = 1.20;  // Объём ретеста > 1.2x среднего
+
+input group "=== Импульс-откат (MF A-B-C на M15) ==="
+input bool   UseImpulseFilter     = true;   // Включить фильтр импульса/отката
+input double ImpulseMinRatio      = 1.5;    // |B−A| / |C−B| минимум для "здорового" импульса
+input double PullbackMaxFib       = 0.618;  // Максимальная глубина отката (доля импульса)
+input int    ImpulseBackWindowM15 = 48;     // Поиск A перед B (M15-баров)
+input int    PullbackWindowM15    = 12;     // Поиск C после B (M15-баров)
+
+input group "=== Clinch вокруг Pivot H1 (MF-V) ==="
+input bool   UseClinchFilter   = true;        // Включить фильтр «схватки»
+input double ClinchAtrK        = 0.50;        // Полуширина зоны: k * ATR(H1)
+input int    ClinchLookbackH1  = 24;          // Сколько H1-баров анализировать
+input int    ClinchFlipsMin    = 3;           // Минимум перебросов через pivotH1
+input double ClinchRangeMaxATR = 1.20;        // Макс. диапазон за Lookback в ATR(H1)
+input bool   ShowClinchZoneOnlyIfTouched = true; // Показывать зону только если цена входила в неё за Lookback
 
 input group "=== Цвета стрелок ==="
 input color  BuyArrowColor = clrLime;         // Цвет стрелки покупки
@@ -70,6 +97,15 @@ input int    ArrowOffset = 10;                // Смещение стрелок
 #property indicator_style2  STYLE_SOLID
 #property indicator_width2  2
 
+//--- Additional plot labels for Data Window
+#property indicator_label3  "EarlyBuy"
+#property indicator_label4  "EarlySell"
+#property indicator_label5  "Exit"
+#property indicator_label6  "Reverse"
+#property indicator_label7  "StrongBuy"
+#property indicator_label8  "StrongSell"
+#property indicator_label9  "EarlyExit"
+
 //--- Buffers for various signals / Буферы сигналов
 double BuyArrowBuffer[];    // сильный сигнал покупки
 double SellArrowBuffer[];   // сильный сигнал продажи
@@ -80,6 +116,275 @@ double ReverseBuffer[];     // метка разворота
 double StrongBuyBuffer[];   // очень сильный сигнал покупки
 double StrongSellBuffer[];  // очень сильный сигнал продажи
 double EarlyExitBuffer[];   // ранний выход
+
+//--- ATR(H1) и Clinch-кэш
+int    atrH1Handle = INVALID_HANDLE;
+double lastAtrH1   = 0.0;
+datetime lastClinchCalcOnH1 = 0;
+
+struct ClinchStatus
+{
+   bool     isClinch;
+   bool     touched;  // цена заходила в зону за период Lookback
+   int      flips;
+   double   range;
+   double   atr;
+   double   zoneTop;
+   double   zoneBot;
+   datetime fromTime;
+   datetime toTime;
+};
+
+enum SigClass { SigNone, SigEarly, SigNormal, SigStrong };
+
+int CopyCloseH1(const int bars, double &buf[])
+{
+   ArraySetAsSeries(buf, true);
+   int got = CopyClose(_Symbol, PERIOD_H1, 0, bars, buf);
+   return got;
+}
+
+// Вычисляет A-B-C на M15 в направлении dir (+1/-1)
+// Возвращает true, если импульс "здоровый" (ratio >= ImpulseMinRatio) и откат не глубже PullbackMaxFib
+bool CheckImpulsePullback_M15(const int dir, double &outRatio)
+{
+   outRatio = 0.0;
+   if(!UseImpulseFilter) return true;
+
+   // Ищем локальный максимум/минимум B в направлении тренда как точку импульса
+   double b = (dir>0 ? iHigh(_Symbol, PERIOD_M15, 1) : iLow(_Symbol, PERIOD_M15, 1));
+   int bIndex = 1;
+
+   // Найти A до B в окне ImpulseBackWindowM15 как противоположный экстремум
+   double a = b; int aIndex = bIndex;
+   int back = MathMin(MathMax(ImpulseBackWindowM15, 3), 96);
+   for(int i=2; i<=back; ++i)
+   {
+      double hi = iHigh(_Symbol, PERIOD_M15, i);
+      double lo = iLow(_Symbol, PERIOD_M15, i);
+      if(dir>0){ if(lo < a){ a = lo; aIndex = i; } }
+      else     { if(hi > a){ a = hi; aIndex = i; } }
+   }
+
+   // Найти C после B как противоположное движение в окне PullbackWindowM15
+   double c = b; int cIndex = bIndex;
+   int fwd = MathMin(MathMax(PullbackWindowM15, 2), 48);
+   for(int j=1; j<=fwd; ++j)
+   {
+      double hi = iHigh(_Symbol, PERIOD_M15, j);
+      double lo = iLow(_Symbol, PERIOD_M15, j);
+      if(dir>0){ if(lo < c){ c = lo; cIndex = j; } }
+      else     { if(hi > c){ c = hi; cIndex = j; } }
+   }
+
+   double impulse = MathAbs(b - a);
+   double pullback = MathAbs(c - b);
+   if(impulse <= 0.0) return false;
+   outRatio = (pullback>0.0 ? (impulse / pullback) : 999.0);
+
+   // Глубина отката от импульса (Фибо): доля |C−B|/|B−A|
+   double fibDepth = (impulse>0.0 ? (pullback / impulse) : 0.0);
+   bool ratioOk = (outRatio >= ImpulseMinRatio);
+   bool depthOk = (fibDepth <= PullbackMaxFib);
+   return (ratioOk && depthOk);
+}
+int CopyRatesH1(const int bars, MqlRates &r[])
+{
+   ArraySetAsSeries(r, true);
+   int got = CopyRates(_Symbol, PERIOD_H1, 0, bars, r);
+   return got;
+}
+
+bool CheckH1Breakout(const double pivotH1, const int dir)
+{
+   // dir = +1 buy, -1 sell
+   double c0 = iClose(_Symbol, PERIOD_H1, 1);
+   if(H1ClosesNeeded <= 1)
+      return (dir>0 ? c0>pivotH1 : c0<pivotH1);
+   double c1 = iClose(_Symbol, PERIOD_H1, 2);
+   return (dir>0 ? (c0>pivotH1 && c1>pivotH1) : (c0<pivotH1 && c1<pivotH1));
+}
+
+bool CheckRetestBounce_M15(const double pivotH1, const int dir, datetime fromTime)
+{
+   // Используем завершенные бары M15, не более 48
+   // Правильный вызов ATR через хэндл и CopyBuffer
+   int atrHandle = iATR(_Symbol, PERIOD_M15, 14);
+   if(atrHandle == INVALID_HANDLE) return false;
+   double atrBuf[]; ArraySetAsSeries(atrBuf, true);
+   double atr = 0.0;
+   if(CopyBuffer(atrHandle, 0, 1, 1, atrBuf) == 1)
+      atr = atrBuf[0];
+   if(atr<=0) return false;
+   double half = RetestTolATR_M15 * atr;
+   double top  = pivotH1 + half, bot = pivotH1 - half;
+
+   int bars = MathMin(MathMax(RetestWindowM15, 1), 48);
+   for(int i=1; i<=bars; ++i)
+   {
+      datetime t = iTime(_Symbol, PERIOD_M15, i);
+      if(t < fromTime) break; // ретест должен быть после пробоя
+
+      double o=iOpen(_Symbol,PERIOD_M15,i),
+             h=iHigh(_Symbol,PERIOD_M15,i),
+             l=iLow(_Symbol,PERIOD_M15,i),
+             c=iClose(_Symbol,PERIOD_M15,i);
+      long   v=iVolume(_Symbol,PERIOD_M15,i);
+
+      bool touched = (h>=bot && l<=top);
+      if(!touched) continue;
+
+      double rangeBar = MathMax(h-l, _Point);
+      double wick     = (dir>0 ? h-c : c-l);
+      bool wickOk     = (rangeBar>0 ? (wick / rangeBar >= WickRejectMin) : false);
+      bool closeOk    = (dir>0 ? c>pivotH1 : c<pivotH1);
+
+      bool volOk = true;
+      if(UseRetestVolume)
+      {
+         double avg=0.0; int cnt=0;
+         for(int k=i+1; k<=i+20; ++k){ long vv=iVolume(_Symbol,PERIOD_M15,k); if(vv<=0) continue; avg += (double)vv; cnt++; }
+         if(cnt>0) avg/=cnt; else avg=0.0;
+         volOk = (avg>0.0 ? ( (double)v >= RetestVolMult*avg ) : true);
+      }
+      if(closeOk && wickOk && volOk) return true;
+   }
+   return false;
+}
+bool EnsureH1History(const int minBars)
+{
+   // Принудительно запрашиваем историю H1, чтобы расчеты работали на любом текущем таймфрейме
+   MqlRates tmp[]; ArraySetAsSeries(tmp, true);
+   int got = CopyRates(_Symbol, PERIOD_H1, 0, minBars, tmp);
+   return (got >= minBars);
+}
+
+double GetATR_H1()
+{
+   double a[];
+   ArraySetAsSeries(a, true);
+   if(CopyBuffer(atrH1Handle, 0, 1, 1, a) == 1) // закрытый бар
+      return a[0];
+   return lastAtrH1 > 0 ? lastAtrH1 : 0.0;
+}
+
+ClinchStatus CalcClinchH1(const double pivotH1, const int lookback, const int flipsMin,
+                          const double rangeMaxATR, const double kATR)
+{
+   ClinchStatus cs; ZeroMemory(cs);
+   cs.isClinch=false;
+   cs.touched=false;
+
+   int needBars = MathMax(lookback, 6);
+   MqlRates r[];
+   int gotRates = CopyRatesH1(needBars, r);
+   if(gotRates < 6) return cs;
+   int useBars = MathMin(needBars, gotRates);
+
+   cs.atr = GetATR_H1();
+
+   double hi = r[0].high, lo = r[0].low;
+   for(int i=0;i<useBars;i++)
+   {
+      if(r[i].high > hi) hi = r[i].high;
+      if(r[i].low  < lo) lo = r[i].low;
+   }
+   cs.range = hi - lo;
+
+   double c[];
+   int gotClose = CopyCloseH1(needBars, c);
+   if(gotClose < 2) return cs;
+   int useClose = MathMin(useBars, gotClose);
+
+   int flips = 0;
+   int prevSign = 0;
+   for(int i=useClose-1; i>=0; i--) // от старых к новым
+   {
+      double diff = c[i] - pivotH1;
+      int sgn = (diff > 0 ? 1 : (diff < 0 ? -1 : 0));
+      if(sgn == 0) continue;
+      if(prevSign == 0) prevSign = sgn;
+      else if(sgn != prevSign) { flips++; prevSign = sgn; }
+   }
+   cs.flips = flips;
+
+   // Fallback: если ATR индикатора ещё ноль, при достаточной истории оцениваем ATR как средний True Range (period 14)
+   if(cs.atr <= 0 && useBars >= 15)
+   {
+      int period = 14;
+      double sumTR = 0.0;
+      for(int i=1; i<=period; i++)
+      {
+         double high = r[i].high;
+         double low  = r[i].low;
+         double prevClose = r[i+1].close;
+         double tr = MathMax(high - low, MathMax(MathAbs(high - prevClose), MathAbs(low - prevClose)));
+         sumTR += tr;
+      }
+      cs.atr = sumTR / 14.0;
+   }
+
+   // Зона вокруг pivot и факт касания ценой за Lookback
+   double half = kATR * cs.atr;
+   cs.zoneTop = pivotH1 + half;
+   cs.zoneBot = pivotH1 - half;
+   if(cs.zoneTop < cs.zoneBot){ double t=cs.zoneTop; cs.zoneTop=cs.zoneBot; cs.zoneBot=t; }
+   for(int i=0;i<useBars;i++)
+   {
+      if(r[i].low <= cs.zoneTop && r[i].high >= cs.zoneBot)
+      {
+         cs.touched = true;
+         break;
+      }
+   }
+
+   bool flipsOk = (cs.flips >= flipsMin);
+   bool rangeOk = (cs.range <= rangeMaxATR * cs.atr);
+   cs.isClinch = flipsOk && rangeOk;
+
+   cs.toTime   = r[0].time;
+   cs.fromTime = r[needBars-1].time;
+   lastAtrH1   = cs.atr;
+   return cs;
+}
+
+void DrawClinchZone(const string name, const ClinchStatus &cs, const double pivotH1, const bool isClinch)
+{
+   // Нормализуем границы цены
+   double half = ClinchAtrK * GetATR_H1();
+   double top  = pivotH1 + half;
+   double bot  = pivotH1 - half;
+   if(top < bot){ double t=top; top=bot; bot=t; }
+
+   // Границы по времени
+   int idx = MathMax(1, ClinchLookbackH1-1);
+   datetime tL = iTime(_Symbol, PERIOD_H1, idx);
+   datetime tR = TimeCurrent();
+
+   if(ObjectFind(0,name) < 0)
+      ObjectCreate(0, name, OBJ_RECTANGLE, 0, tL, top, tR, bot);
+   else
+   {
+      ObjectSetInteger(0, name, OBJPROP_TIME,  0, tL);
+      ObjectSetDouble(0,  name, OBJPROP_PRICE, 0, top);
+      ObjectSetInteger(0, name, OBJPROP_TIME,  1, tR);
+      ObjectSetDouble(0,  name, OBJPROP_PRICE, 1, bot);
+   }
+
+   ObjectSetInteger(0, name, OBJPROP_BACK,   true);
+   ObjectSetInteger(0, name, OBJPROP_STYLE,  STYLE_DOT);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH,  1);
+   ObjectSetInteger(0, name, OBJPROP_ZORDER, 0);
+   ObjectSetInteger(0, name, OBJPROP_COLOR,  isClinch ? clrPaleTurquoise : clrAliceBlue);
+}
+
+SigClass ApplyClinch(const SigClass s, const bool clinch)
+{
+   if(!clinch) return s;
+   if(s == SigStrong) return SigNormal;
+   if(s == SigNormal) return SigEarly;
+   return SigNone; // SigEarly -> блок
+}
 
 //--- For new levels on H4 and D1 / Для H4 и D1 новых уровней
 double mfPivotH4;
@@ -178,9 +483,9 @@ bool IsVolumeConfirmedOnTimeframe(ENUM_TIMEFRAMES tf)
 //+------------------------------------------------------------------+
 //| Анализ объема на 3 таймфреймах MasterForex-V                     |
 //+------------------------------------------------------------------+
-VolumeAnalysis AnalyzeVolumeOnMasterForexTimeframes()
+void AnalyzeVolumeOnMasterForexTimeframes(VolumeAnalysis &analysis)
 {
-   VolumeAnalysis analysis;
+   ZeroMemory(analysis);
    analysis.confirmedTimeframes = 0;
    
    // Анализ объема на M5
@@ -194,8 +499,6 @@ VolumeAnalysis AnalyzeVolumeOnMasterForexTimeframes()
    // Анализ объема на H1
    analysis.h1VolumeConfirmed = IsVolumeConfirmedOnTimeframe(PERIOD_H1);
    if(analysis.h1VolumeConfirmed) analysis.confirmedTimeframes++;
-   
-   return analysis;
 }
 
 //+------------------------------------------------------------------+
@@ -265,6 +568,11 @@ int OnInit()
    PlotIndexSetInteger(5, PLOT_LINE_COLOR, ReverseColor);
    PlotIndexSetInteger(6, PLOT_LINE_COLOR, StrongSignalColor);
    PlotIndexSetInteger(7, PLOT_LINE_COLOR, StrongSignalColor);
+   
+   // Инициализация индикаторов волатильности
+   atrH1Handle = iATR(_Symbol, PERIOD_H1, 14);
+   if(atrH1Handle == INVALID_HANDLE)
+      return(INIT_FAILED);
    PlotIndexSetInteger(8, PLOT_LINE_COLOR, EarlyExitColor);
 
    // Инициализация кэша
@@ -290,6 +598,7 @@ void OnDeinit(const int reason)
    ObjectDelete(0, "MFV_STATUS_VOLUME");
    ObjectDelete(0, "MFV_STATUS_SESSION");
    ObjectDelete(0, "MFV_STATUS_SIGNAL");
+   ObjectDelete(0, "MFV_STATUS_CLINCH");
    
    if(!ShowClassicPivot)
    {
@@ -529,7 +838,8 @@ int OnCalculate(const int rates_total,
    analysis.sessionValid = IsValidTradingSession();
 
    // Анализ объема на 3 таймфреймах MasterForex-V
-   VolumeAnalysis volumeAnalysis = AnalyzeVolumeOnMasterForexTimeframes();
+   VolumeAnalysis volumeAnalysis;
+   AnalyzeVolumeOnMasterForexTimeframes(volumeAnalysis);
    analysis.volumeConfirmed = (volumeAnalysis.confirmedTimeframes >= 2); // Минимум 2 из 3
 
    // Формирование строк статуса
@@ -585,32 +895,116 @@ int OnCalculate(const int rates_total,
    bool canTrade = analysis.sessionValid && analysis.volumeConfirmed && analysis.strength >= MinTrendStrength;
    bool earlyCanTrade = analysis.sessionValid && analysis.volumeConfirmed && analysis.strength >= MinEarlyTrendStrength;
 
+   // Расчет CLINCH по pivotH1 (не чаще 1 H1-бара). Обеспечиваем историю H1 на любом ТФ
+   static ClinchStatus clinchState;
+   EnsureH1History(MathMax(ClinchLookbackH1 + 20, 100));
+   datetime lastH1Bar = iTime(_Symbol, PERIOD_H1, 0);
+   if(UseClinchFilter && (lastClinchCalcOnH1 == 0 || lastH1Bar == 0 || lastH1Bar != lastClinchCalcOnH1))
+   {
+      clinchState = CalcClinchH1(pivotH1, ClinchLookbackH1, ClinchFlipsMin,
+                                 ClinchRangeMaxATR, ClinchAtrK);
+      lastClinchCalcOnH1 = (lastH1Bar == 0 ? TimeCurrent() : lastH1Bar);
+      // Отрисовываем зону, если отключен фильтр показа или если зона была потрогана ценой
+      if(!ShowClinchZoneOnlyIfTouched || clinchState.touched)
+         DrawClinchZone("H1_CLINCH_ZONE", clinchState, pivotH1, clinchState.isClinch);
+      else
+         ObjectDelete(0, "H1_CLINCH_ZONE");
+   }
+
    if(trendH1 == 1 && trendM15 == 1 && trendM5 == 1 && canTrade)
    {
-      if(analysis.strength >= 3)
+      SigClass sc = (analysis.strength >= 3) ? SigStrong : SigNormal;
+      sc = ApplyClinch(sc, UseClinchFilter ? clinchState.isClinch : false);
+
+      // Подтверждение пробоя H1 pivot по правилам
+      if(BreakoutConfirm != Confirm_Off)
+      {
+         int dir = +1;
+         bool needConfirm =
+            (BreakoutConfirm==Confirm_All) ||
+            (BreakoutConfirm==Confirm_StrongOnly      && sc==SigStrong) ||
+            (BreakoutConfirm==Confirm_StrongAndNormal && (sc==SigStrong || sc==SigNormal));
+         if(needConfirm && !clinchState.isClinch)
+         {
+            bool okH1  = CheckH1Breakout(pivotH1, dir);
+            bool okRet = CheckRetestBounce_M15(pivotH1, dir, iTime(_Symbol, PERIOD_H1, 1));
+            bool okBoth = okH1 && okRet;
+            if(sc==SigStrong && !okBoth)        sc = SigNormal;
+            else if(sc==SigNormal && !okH1)     sc = SigEarly;
+         }
+      }
+
+      // Импульс-откат на M15: апгрейд Early→Normal при здоровом импульсе, даунгрейд при слишком глубоком откате
+      if(UseImpulseFilter)
+      {
+         double ratio=0.0;
+         bool okImpulse = CheckImpulsePullback_M15(+1, ratio);
+         if(sc==SigEarly && okImpulse) sc = SigNormal; // апгрейд раннего за счёт здорового импульса
+         if(!okImpulse && sc==SigNormal) sc = SigEarly; // глубокий откат — понижаем
+      }
+      if(sc == SigStrong)
       {
          StrongBuyBuffer[1] = price[1] - ArrowOffset * _Point;
          firedStrongBuy = true;
       }
-      else
+      else if(sc == SigNormal)
       {
          BuyArrowBuffer[1] = price[1] - ArrowOffset * _Point;
          firedBuy = true;
+      }
+      // если понижен до SigEarly — отрисуем ранний вход
+      else if(sc == SigEarly)
+      {
+         EarlyBuyBuffer[1] = price[1] - ArrowOffset * _Point;
+         firedEarlyBuy = true;
       }
       lastSignal = 1;
       lastPivot  = pivotH1;
    }
    else if(trendH1 == -1 && trendM15 == -1 && trendM5 == -1 && canTrade)
    {
-      if(analysis.strength >= 3)
+      SigClass sc = (analysis.strength >= 3) ? SigStrong : SigNormal;
+      sc = ApplyClinch(sc, UseClinchFilter ? clinchState.isClinch : false);
+
+      // Подтверждение пробоя H1 pivot по правилам
+      if(BreakoutConfirm != Confirm_Off)
+      {
+         int dir = -1;
+         bool needConfirm =
+            (BreakoutConfirm==Confirm_All) ||
+            (BreakoutConfirm==Confirm_StrongOnly      && sc==SigStrong) ||
+            (BreakoutConfirm==Confirm_StrongAndNormal && (sc==SigStrong || sc==SigNormal));
+         if(needConfirm && !clinchState.isClinch)
+         {
+            bool okH1  = CheckH1Breakout(pivotH1, dir);
+            bool okRet = CheckRetestBounce_M15(pivotH1, dir, iTime(_Symbol, PERIOD_H1, 1));
+            bool okBoth = okH1 && okRet;
+            if(sc==SigStrong && !okBoth)        sc = SigNormal;
+            else if(sc==SigNormal && !okH1)     sc = SigEarly;
+         }
+      }
+
+      if(UseImpulseFilter)
+      {
+         double ratio=0.0;
+         bool okImpulse = CheckImpulsePullback_M15(-1, ratio);
+         if(sc==SigEarly && okImpulse) sc = SigNormal;
+         if(!okImpulse && sc==SigNormal) sc = SigEarly;
+      }
+      if(sc == SigStrong)
       {
          StrongSellBuffer[1] = price[1] + ArrowOffset * _Point;
          firedStrongSell = true;
       }
-      else
+      else if(sc == SigNormal)
       {
          SellArrowBuffer[1] = price[1] + ArrowOffset * _Point;
          firedSell = true;
+      }
+      else if(sc == SigEarly)
+      {
+         EarlySellBuffer[1] = price[1] + ArrowOffset * _Point;
+         firedEarlySell = true;
       }
       lastSignal = -1;
       lastPivot  = pivotH1;
@@ -678,6 +1072,14 @@ int OnCalculate(const int rates_total,
    else if(firedHardExit)  signalText = (UseRussian ? "Сигнал: Выход (H1 Pivot)" : "Signal: HARD EXIT");
    else if(firedReversal)  signalText = (UseRussian ? "Сигнал: Разворот" : "Signal: Reversal");
    DrawRowLabel("MFV_STATUS_SIGNAL", signalText, 190);
+
+   // Статус CLINCH (H1 pivot)
+   double rangeAtr = (clinchState.atr > 0.0 ? (clinchState.range / clinchState.atr) : 0.0);
+   string clinchOn = clinchState.isClinch ? (UseRussian ? "✓" : "✓") : (UseRussian ? "✗" : "✗");
+   string clinchText = UseRussian ?
+      StringFormat("Схватка: %s, flips=%d, range=%.2f ATR, zone=±%.2f ATR", clinchOn, clinchState.flips, rangeAtr, ClinchAtrK) :
+      StringFormat("Clinch: %s, flips=%d, range=%.2f ATR, zone=±%.2f ATR", clinchOn, clinchState.flips, rangeAtr, ClinchAtrK);
+   DrawRowLabel("MFV_STATUS_CLINCH", clinchText, 210);
 
    // Отрисовка линий Pivot
    DrawOrUpdateLine("MF_PIVOT_H1",  pivotH1,  PivotH1Color,     2);

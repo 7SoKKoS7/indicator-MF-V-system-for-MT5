@@ -79,7 +79,40 @@ input int    MinEarlyTrendStrength = 1;       // Минимальная сила
 input bool   UseRiskManagement = true;        // Использовать управление рисками
 input double MaxRiskPercent = 2.0;            // Максимальный риск в %
 ```
+
+### Clinch (схватка) вокруг pivot H1
+```mql5
+input bool   UseClinchFilter   = true;        // Включить фильтр «схватки»
+input double ClinchAtrK        = 0.50;        // Полуширина зоны: k * ATR(H1)
+input int    ClinchLookbackH1  = 24;          // Сколько H1-баров анализировать
+input int    ClinchFlipsMin    = 3;           // Минимум перебросов через pivotH1
+input double ClinchRangeMaxATR = 1.20;        // Макс. диапазон за Lookback в ATR(H1)
+input bool   ShowClinchZoneOnlyIfTouched = true; // Показывать зону только если цена входила в неё за Lookback
+```
+- Зона clinch — полоса ±`ClinchAtrK * ATR(H1)` вокруг `pivotH1`.
+- Признак clinch: перебросы цены (по Close H1) через `pivotH1` ≥ `ClinchFlipsMin` и диапазон `max(high)−min(low)` за `ClinchLookbackH1` ≤ `ClinchRangeMaxATR * ATR(H1)`.
+- В clinch понижается класс сигналов: сильные → обычные, обычные → ранние, ранние → блок.
+- В панели отображается строка: `Clinch: ✓/✗, flips=X, range=Y ATR, zone=±K ATR`.
+- Отрисовка зоны: если `ShowClinchZoneOnlyIfTouched = true`, прямоугольник рисуется только когда цена заходила в зону за рассматриваемый период.
 > Примечание по Risk Management: параметры `UseRiskManagement` и `MaxRiskPercent` зарезервированы для будущего советника (EA). В текущем индикаторе они не задействованы и не влияют на расчёт сигналов.
+
+### Подтверждение пробоя Pivot (H1)
+```mql5
+enum ConfirmMode { Confirm_Off, Confirm_StrongOnly, Confirm_StrongAndNormal, Confirm_All };
+input ConfirmMode BreakoutConfirm = Confirm_StrongOnly; // Режим подтверждения
+
+input int    H1ClosesNeeded       = 2;     // сколько H1‑закрытий за pivot
+input int    RetestWindowM15      = 12;    // окно ретеста в M15‑барах (до 3 ч)
+input double RetestTolATR_M15     = 0.25;  // допуск касания: ±0.25*ATR(M15)
+input double WickRejectMin        = 0.60;  // доля тени в диапазоне бара (отскок)
+input bool   UseRetestVolume      = true;  // учитывать объём на ретесте
+input double RetestVolMult        = 1.20;  // объём ретеста > 1.2× среднего
+```
+- Strong по умолчанию требует: 2 закрытия H1 за pivot в сторону входа И ретест уровня на M15/M5 с отскоком (тень) и (опционально) объёмом.
+- Normal: достаточно 1 закрытия H1 за pivot; если подтверждения нет — сигнал будет понижен до Early.
+- Early: остаётся без подтверждений.
+- Режим задаётся `BreakoutConfirm`: можно применить правило только к Strong (по умолчанию), к Strong+Normal, ко всем или выключить.
+- При активной «схватке» (clinch) дополнительное подтверждение не требуется — класс уже понижается фильтром clinch.
 
 ## Информационная панель
 
@@ -98,18 +131,37 @@ input double MaxRiskPercent = 2.0;            // Максимальный рис
 - ✅ **Сила тренда = 3/3** (максимальная)
 - ✅ **Объем подтвержден** (минимум 2/3 таймфреймов)
 - ✅ **Валидная торговая сессия**
+ - ✅ (если включено `BreakoutConfirm`) **Пробой с закреплением**: `H1ClosesNeeded` закрытий за pivot + **ретест** pivot на M15/M5 с отскоком (тенью) и, при `UseRetestVolume=true`, объёмом ≥ `RetestVolMult`×среднего.
 
 ### Обычные сигналы (зеленые/красные стрелки):
 - ✅ **Все 3 таймфрейма совпадают** (H1, M15, M5)
 - ⚠️ **Сила тренда = 1-2/3** (средняя)
 - ✅ **Объем подтвержден** (минимум 2/3 таймфреймов)
 - ✅ **Валидная торговая сессия**
+ - ⚠️ (если включено применение к Normal) без подтверждения пробоя по H1 — сигнал автоматически понижается до Early.
 
 ### Ранние сигналы (голубые стрелки):
 - ⚠️ **Частичное совпадение** (H1 и M5, но НЕ M15)
 - ⚠️ **Слабая сила тренда** — порог задаётся `MinEarlyTrendStrength` (по умолчанию 1/3)
 - ✅ **Объем подтвержден** (минимум 2/3 таймфреймов)
 - ✅ **Валидная торговая сессия**
+
+### Импульс‑откат (MF A‑B‑C) для повышения/понижения класса
+- На M15, в направлении тренда H1, распознаётся структура A‑B‑C:
+  - Импульс «здоровый», если отношение `|B−A| / |C−B| ≥ ImpulseMinRatio` (по умолчанию 1.5).
+  - Глубина отката оценивается как доля `|C−B| / |B−A|` и сравнивается с `PullbackMaxFib` (по умолчанию 0.618).
+- Правила ап/даун‑грейда:
+  - Если импульс «здоровый» — ранний сигнал (Early) апгрейдится до обычного (Normal).
+  - Если откат слишком глубокий — обычный сигнал (Normal) понижается до раннего (Early) или игнорируется (по желанию, сейчас понижение).
+
+Настройки:
+```mql5
+input bool   UseImpulseFilter     = true;   // Включить фильтр импульса/отката
+input double ImpulseMinRatio      = 1.5;    // |B−A| / |C−B| минимум
+input double PullbackMaxFib       = 0.618;  // макс. глубина отката (доля импульса)
+input int    ImpulseBackWindowM15 = 48;     // поиск A перед B (M15‑баров)
+input int    PullbackWindowM15    = 12;     // поиск C после B (M15‑баров)
+```
 
 ### Сигналы выхода (серые крестики):
 - ❌ **Жёсткий выход (hard): пересечение pivotH1** ценой в противоположном направлении
