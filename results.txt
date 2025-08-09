@@ -99,3 +99,8 @@ Files: EURUSDM5.csv, EURUSDM15.csv, EURUSDH1.csv
 TFs: M5, M15, H1
 Signals: 67205
 Success rate: 2.53%
+2025-08-09T21:35:57.252278
+Files: EURUSDM5.csv, EURUSDM15.csv, EURUSDH1.csv
+TFs: M5, M15, H1
+Signals: 67205
+Success rate: 2.53%

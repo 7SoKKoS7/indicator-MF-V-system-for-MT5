@@ -10,8 +10,8 @@
 #property strict
 
 #property indicator_chart_window
-#property indicator_buffers 8
-#property indicator_plots   8
+#property indicator_buffers 9
+#property indicator_plots   9
 
 //--- Input Parameters / Входные параметры
 input group "=== Основные настройки ==="
@@ -21,6 +21,9 @@ input bool   ShowStatusInfo = true;           // Показывать инфор
 input bool   EnableVolumeFilter = true;       // Фильтр по объему
 input bool   EnableSessionFilter = true;      // Фильтр торговых сессий
 
+input group "=== Сессии ==="
+input int    SessionGMTOffset = 2;            // Смещение серверного времени относительно GMT (пример: 2 для GMT+2)
+
 input group "=== Настройки ZigZag ==="
 input int    InpDepth = 12;                   // Глубина ZigZag
 input double InpDeviation = 5.0;              // Отклонение в пунктах
@@ -28,17 +31,19 @@ input double InpDeviation = 5.0;              // Отклонение в пун�
 input group "=== Фильтры MasterForex-V ==="
 input double MinVolumeMultiplier = 1.2;       // Минимальный множитель объема
 input int    MinTrendStrength = 2;            // Минимальная сила тренда (1-3)
+input int    MinEarlyTrendStrength = 1;       // Минимальная сила тренда для ранних входов (1-3)
 input bool   UseRiskManagement = true;        // Использовать управление рисками
 input double MaxRiskPercent = 2.0;            // Максимальный риск в %
 
 input group "=== Цвета стрелок ==="
 input color  BuyArrowColor = clrLime;         // Цвет стрелки покупки
 input color  SellArrowColor = clrRed;         // Цвет стрелки продажи
-input color  EarlyBuyColor = clrLime;         // Цвет ранней покупки
-input color  EarlySellColor = clrRed;         // Цвет ранней продажи
+input color  EarlyBuyColor = clrDodgerBlue;   // Цвет ранней покупки
+input color  EarlySellColor = clrDeepSkyBlue; // Цвет ранней продажи
 input color  ExitColor = clrGray;             // Цвет выхода
 input color  ReverseColor = clrAqua;          // Цвет разворота
 input color  StrongSignalColor = clrYellow;   // Цвет сильного сигнала
+input color  EarlyExitColor = clrSandyBrown;  // Цвет раннего выхода
 
 input group "=== Цвета линий Pivot ==="
 input color  PivotH1Color = clrBlue;          // Цвет H1 Pivot
@@ -74,6 +79,7 @@ double ExitBuffer[];        // крестик выхода
 double ReverseBuffer[];     // метка разворота
 double StrongBuyBuffer[];   // очень сильный сигнал покупки
 double StrongSellBuffer[];  // очень сильный сигнал продажи
+double EarlyExitBuffer[];   // ранний выход
 
 //--- For new levels on H4 and D1 / Для H4 и D1 новых уровней
 double mfPivotH4;
@@ -123,21 +129,28 @@ struct VolumeAnalysis
 bool IsValidTradingSession()
 {
    if(!EnableSessionFilter) return true;
-   
-   datetime currentTime = TimeCurrent();
+
+   // Преобразуем серверное время в GMT через настраиваемый сдвиг.
+   // SessionGMTOffset — смещение сервера относительно GMT (например, 2 для GMT+2)
+   datetime serverTime = TimeTradeServer();
    MqlDateTime dt;
-   TimeToStruct(currentTime, dt);
-   int hour = dt.hour;
-   
+   TimeToStruct(serverTime, dt);
+   int hourServer = dt.hour;
+   int hourGMT = hourServer - SessionGMTOffset;
+   if(hourGMT < 0)  hourGMT += 24;
+   if(hourGMT >= 24) hourGMT -= 24;
+
+   int hour = hourGMT;
+
    // Лондонская сессия (8:00-16:00 GMT)
    if(hour >= 8 && hour < 16) return true;
-   
+
    // Нью-Йоркская сессия (13:00-21:00 GMT)
    if(hour >= 13 && hour < 21) return true;
-   
+
    // Токийская сессия (0:00-8:00 GMT)
    if(hour >= 0 && hour < 8) return true;
-   
+
    return false;
 }
 
@@ -217,6 +230,7 @@ int OnInit()
    SetIndexBuffer(5, ReverseBuffer,    INDICATOR_DATA);
    SetIndexBuffer(6, StrongBuyBuffer,  INDICATOR_DATA);
    SetIndexBuffer(7, StrongSellBuffer, INDICATOR_DATA);
+   SetIndexBuffer(8, EarlyExitBuffer,  INDICATOR_DATA);
 
    // Настройка буферов как серийных
    ArraySetAsSeries(BuyArrowBuffer,   true);
@@ -240,6 +254,7 @@ int OnInit()
    PlotIndexSetInteger(5, PLOT_ARROW, 221); // reversal mark
    PlotIndexSetInteger(6, PLOT_ARROW, 225); // strong buy
    PlotIndexSetInteger(7, PLOT_ARROW, 226); // strong sell
+   PlotIndexSetInteger(8, PLOT_ARROW, 252); // early exit
 
    // Настройка цветов
    PlotIndexSetInteger(0, PLOT_LINE_COLOR, BuyArrowColor);
@@ -250,6 +265,7 @@ int OnInit()
    PlotIndexSetInteger(5, PLOT_LINE_COLOR, ReverseColor);
    PlotIndexSetInteger(6, PLOT_LINE_COLOR, StrongSignalColor);
    PlotIndexSetInteger(7, PLOT_LINE_COLOR, StrongSignalColor);
+   PlotIndexSetInteger(8, PLOT_LINE_COLOR, EarlyExitColor);
 
    // Инициализация кэша
    pivotCache.isValid = false;
@@ -273,6 +289,7 @@ void OnDeinit(const int reason)
    ObjectDelete(0, "MFV_STATUS_STRENGTH");
    ObjectDelete(0, "MFV_STATUS_VOLUME");
    ObjectDelete(0, "MFV_STATUS_SESSION");
+   ObjectDelete(0, "MFV_STATUS_SIGNAL");
    
    if(!ShowClassicPivot)
    {
@@ -300,33 +317,48 @@ double GetLastPivot(string symbol, ENUM_TIMEFRAMES tf)
    ArraySetAsSeries(close, true);
 
    double deviation = InpDeviation * _Point;
-   double last_pivot_price = close[count-1];
-   int direction = 0;
+    double last_pivot_price = close[count-1];
+    int    last_pivot_index = count-1;     // индекс последнего кандидата в пивот
+    int    direction = 0;                   // 0 — не определено, 1 — ищем максимум, -1 — ищем минимум
+    const int minDistance = MathMax(1, InpDepth); // минимальная дистанция между пивотами
    
    for(int i = count-2; i >= 0; --i)
    {
       double price = close[i];
-      if(direction == 0)
+       if(direction == 0)
       {
          if(MathAbs(price - last_pivot_price) > deviation)
          {
             direction = (price > last_pivot_price) ? 1 : -1;
             last_pivot_price = price;
+            last_pivot_index = i;
          }
       }
       else if(direction == 1)
       {
-         if(price > last_pivot_price)
-            last_pivot_price = price;
-         else if((last_pivot_price - price) > deviation)
-            return last_pivot_price;
+          if(price > last_pivot_price)
+          {
+             last_pivot_price = price;
+             last_pivot_index = i;
+          }
+          else if((last_pivot_price - price) > deviation && (last_pivot_index - i) >= minDistance)
+          {
+             // Подтвержден локальный максимум с учетом глубины
+             return last_pivot_price;
+          }
       }
       else // direction == -1
       {
-         if(price < last_pivot_price)
-            last_pivot_price = price;
-         else if((price - last_pivot_price) > deviation)
-            return last_pivot_price;
+          if(price < last_pivot_price)
+          {
+             last_pivot_price = price;
+             last_pivot_index = i;
+          }
+          else if((price - last_pivot_price) > deviation && (last_pivot_index - i) >= minDistance)
+          {
+             // Подтвержден локальный минимум с учетом глубины
+             return last_pivot_price;
+          }
       }
    }
    return last_pivot_price;
@@ -548,33 +580,50 @@ int OnCalculate(const int rates_total,
    DrawRowLabel("MFV_STATUS_SESSION", sessionText, 170);
 
    // Логика сигналов MasterForex-V
+   bool firedStrongBuy=false, firedStrongSell=false, firedBuy=false, firedSell=false;
+   bool firedEarlyBuy=false, firedEarlySell=false, firedHardExit=false, firedEarlyExit=false, firedReversal=false;
    bool canTrade = analysis.sessionValid && analysis.volumeConfirmed && analysis.strength >= MinTrendStrength;
+   bool earlyCanTrade = analysis.sessionValid && analysis.volumeConfirmed && analysis.strength >= MinEarlyTrendStrength;
 
    if(trendH1 == 1 && trendM15 == 1 && trendM5 == 1 && canTrade)
    {
       if(analysis.strength >= 3)
+      {
          StrongBuyBuffer[1] = price[1] - ArrowOffset * _Point;
+         firedStrongBuy = true;
+      }
       else
+      {
          BuyArrowBuffer[1] = price[1] - ArrowOffset * _Point;
+         firedBuy = true;
+      }
       lastSignal = 1;
       lastPivot  = pivotH1;
    }
    else if(trendH1 == -1 && trendM15 == -1 && trendM5 == -1 && canTrade)
    {
       if(analysis.strength >= 3)
+      {
          StrongSellBuffer[1] = price[1] + ArrowOffset * _Point;
+         firedStrongSell = true;
+      }
       else
+      {
          SellArrowBuffer[1] = price[1] + ArrowOffset * _Point;
+         firedSell = true;
+      }
       lastSignal = -1;
       lastPivot  = pivotH1;
    }
-   else if(trendH1 == 1 && trendM5 == 1 && trendM15 != 1 && canTrade)
+   else if(trendH1 == 1 && trendM5 == 1 && trendM15 != 1 && earlyCanTrade)
    {
       EarlyBuyBuffer[1] = price[1] - ArrowOffset * _Point;
+      firedEarlyBuy = true;
    }
-   else if(trendH1 == -1 && trendM5 == -1 && trendM15 != -1 && canTrade)
+   else if(trendH1 == -1 && trendM5 == -1 && trendM15 != -1 && earlyCanTrade)
    {
       EarlySellBuffer[1] = price[1] + ArrowOffset * _Point;
+      firedEarlySell = true;
    }
 
    // Логика выхода
@@ -582,20 +631,53 @@ int OnCalculate(const int rates_total,
    {
       ExitBuffer[1] = price[1];
       lastSignal = 0;
+      firedHardExit = true;
    }
    else if(lastSignal == -1 && price_now > lastPivot)
    {
       ExitBuffer[1] = price[1];
       lastSignal = 0;
+      firedHardExit = true;
+   }
+
+   // Ранний выход по смене тренда M15 против позиции
+   if(lastSignal == 1 && trendM15 < 0)
+   {
+      // Мягкий (soft) выход
+      // Для визуализации используем тот же стиль, но другой цвет/буфер
+      // EarlyExitBuffer будет отрисован отдельным слоем
+      // Координата по цене текущего бара-1
+      // Примечание: не сбрасываем lastSignal, это индикатор, не EA
+      EarlyExitBuffer[1] = price[1];
+      firedEarlyExit = true;
+   }
+   else if(lastSignal == -1 && trendM15 > 0)
+   {
+      EarlyExitBuffer[1] = price[1];
+      firedEarlyExit = true;
    }
 
    // Логика разворота
    if(trendH1 == trendM15 && trendH1 != 0 && trendH1 != lastTrendH1 && lastTrendH1 != 0)
    {
       ReverseBuffer[1] = price[1];
+      firedReversal = true;
    }
    lastTrendH1  = trendH1;
    lastTrendM15 = trendM15;
+
+   // Текущий сигнал (строка статуса)
+   string signalText = "-";
+   if(firedStrongBuy)  signalText = (UseRussian ? "Сигнал: Сильная покупка" : "Signal: Strong BUY");
+   else if(firedStrongSell) signalText = (UseRussian ? "Сигнал: Сильная продажа" : "Signal: Strong SELL");
+   else if(firedBuy)    signalText = (UseRussian ? "Сигнал: Покупка" : "Signal: BUY");
+   else if(firedSell)   signalText = (UseRussian ? "Сигнал: Продажа" : "Signal: SELL");
+   else if(firedEarlyBuy)  signalText = (UseRussian ? "Сигнал: Ранний вход (BUY)" : "Signal: Early BUY");
+   else if(firedEarlySell) signalText = (UseRussian ? "Сигнал: Ранний вход (SELL)" : "Signal: Early SELL");
+   else if(firedEarlyExit) signalText = (UseRussian ? "Сигнал: Ранний выход" : "Signal: Early EXIT");
+   else if(firedHardExit)  signalText = (UseRussian ? "Сигнал: Выход (H1 Pivot)" : "Signal: HARD EXIT");
+   else if(firedReversal)  signalText = (UseRussian ? "Сигнал: Разворот" : "Signal: Reversal");
+   DrawRowLabel("MFV_STATUS_SIGNAL", signalText, 190);
 
    // Отрисовка линий Pivot
    DrawOrUpdateLine("MF_PIVOT_H1",  pivotH1,  PivotH1Color,     2);
