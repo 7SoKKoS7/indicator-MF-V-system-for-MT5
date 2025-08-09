@@ -791,6 +791,16 @@ void OnDeinit(const int reason)
    ObjectDelete(0, objR2);
    ObjectDelete(0, objS1);
    ObjectDelete(0, objS2);
+
+   // Дополнительные строки статуса
+   ObjectDelete(0, "MFV_STATUS_PHASE");
+   ObjectDelete(0, "MFV_STATUS_CONS");
+
+   // Освобождение ресурсов индикаторов (во избежание утечек хэндлов)
+   if(atrH1Handle != INVALID_HANDLE) { IndicatorRelease(atrH1Handle); atrH1Handle = INVALID_HANDLE; }
+   if(ema50H      != INVALID_HANDLE) { IndicatorRelease(ema50H);      ema50H      = INVALID_HANDLE; }
+   if(ema200H     != INVALID_HANDLE) { IndicatorRelease(ema200H);     ema200H     = INVALID_HANDLE; }
+   if(rsiH        != INVALID_HANDLE) { IndicatorRelease(rsiH);        rsiH        = INVALID_HANDLE; }
 }
 
 //+------------------------------------------------------------------+
@@ -828,47 +838,50 @@ double GetLastPivot(string symbol, ENUM_TIMEFRAMES tf)
     int    last_pivot_index = count-1;     // индекс последнего кандидата в пивот
     int    direction = 0;                   // 0 — не определено, 1 — ищем максимум, -1 — ищем минимум
     const int minDistance = MathMax(1, InpDepth); // минимальная дистанция между пивотами
-   
+    double confirmed_pivot = 0.0;           // только подтвержденный экстремум
+
+   // Ищем ближайший к текущему подтвержденный экстремум, игнорируя кандидатов
    for(int i = count-2; i >= 1; --i) // не заходим на i==0 (текущий бар)
    {
-      double price = close[i];
-       if(direction == 0)
+      double price_i = close[i];
+      if(direction == 0)
       {
-         if(MathAbs(price - last_pivot_price) > deviation)
+         if(MathAbs(price_i - last_pivot_price) > deviation)
          {
-            direction = (price > last_pivot_price) ? 1 : -1;
-            last_pivot_price = price;
+            direction = (price_i > last_pivot_price) ? 1 : -1;
+            last_pivot_price = price_i;
             last_pivot_index = i;
          }
       }
       else if(direction == 1)
       {
-          if(price > last_pivot_price)
-          {
-             last_pivot_price = price;
-             last_pivot_index = i;
-          }
-          else if((last_pivot_price - price) > deviation && (last_pivot_index - i) >= minDistance)
-          {
-             // Подтвержден локальный максимум с учетом глубины
-             return last_pivot_price;
-          }
+         if(price_i > last_pivot_price)
+         {
+            last_pivot_price = price_i;
+            last_pivot_index = i;
+         }
+         else if((last_pivot_price - price_i) > deviation && (last_pivot_index - i) >= minDistance)
+         {
+            confirmed_pivot = last_pivot_price;
+            break;
+         }
       }
       else // direction == -1
       {
-          if(price < last_pivot_price)
-          {
-             last_pivot_price = price;
-             last_pivot_index = i;
-          }
-          else if((price - last_pivot_price) > deviation && (last_pivot_index - i) >= minDistance)
-          {
-             // Подтвержден локальный минимум с учетом глубины
-             return last_pivot_price;
-          }
+         if(price_i < last_pivot_price)
+         {
+            last_pivot_price = price_i;
+            last_pivot_index = i;
+         }
+         else if((price_i - last_pivot_price) > deviation && (last_pivot_index - i) >= minDistance)
+         {
+            confirmed_pivot = last_pivot_price;
+            break;
+         }
       }
    }
-   return last_pivot_price;
+   // Возвращаем только подтвержденный экстремум; если его нет в окне поиска — 0.0 (ждём подтверждения)
+   return confirmed_pivot;
 }
 
 //+------------------------------------------------------------------+
@@ -881,11 +894,18 @@ void UpdatePivotCache()
    // Обновляем кэш только если прошло достаточно времени или он недействителен
    if(!pivotCache.isValid || (currentTime - pivotCache.lastUpdate) > 60)
    {
-      pivotCache.h1 = GetLastPivot(_Symbol, PERIOD_H1);
-      pivotCache.m15 = GetLastPivot(_Symbol, PERIOD_M15);
-      pivotCache.m5 = GetLastPivot(_Symbol, PERIOD_M5);
-      pivotCache.h4 = GetLastPivot(_Symbol, PERIOD_H4);
-      pivotCache.d1 = GetLastPivot(_Symbol, PERIOD_D1);
+      double n_h1  = GetLastPivot(_Symbol, PERIOD_H1);
+      double n_m15 = GetLastPivot(_Symbol, PERIOD_M15);
+      double n_m5  = GetLastPivot(_Symbol, PERIOD_M5);
+      double n_h4  = GetLastPivot(_Symbol, PERIOD_H4);
+      double n_d1  = GetLastPivot(_Symbol, PERIOD_D1);
+
+      // Не затираем валидные значения нулями (пока новый экстремум не подтвержден)
+      if(n_h1  > 0.0) pivotCache.h1  = n_h1;
+      if(n_m15 > 0.0) pivotCache.m15 = n_m15;
+      if(n_m5  > 0.0) pivotCache.m5  = n_m5;
+      if(n_h4  > 0.0) pivotCache.h4  = n_h4;
+      if(n_d1  > 0.0) pivotCache.d1  = n_d1;
       
       pivotCache.lastUpdate = currentTime;
       pivotCache.isValid = true;
@@ -1007,6 +1027,7 @@ int OnCalculate(const int rates_total,
    static double lastPivotM15AtEntry = 0.0;
    static double lastPivotM5AtEntry  = 0.0;
    static double lastExitPivot       = 0.0; // выбранный уровень выхода для режимов Exit_H1/EntryTF/Nearest
+   static bool   earlyExitShown      = false; // чтобы ранний выход рисовался один раз на позицию
 
    // Обновление кэша pivot значений
    UpdatePivotCache();
@@ -1183,6 +1204,7 @@ int OnCalculate(const int rates_total,
          firedEarlyBuy = true;
       }
        lastSignal = 1;
+       earlyExitShown = false; // новая позиция — сбрасываем флаг раннего выхода
        // Зафиксировать уровни на момент входа
        lastPivotH1AtEntry  = pivotH1;
        lastPivotM15AtEntry = pivotM15;
@@ -1263,7 +1285,7 @@ int OnCalculate(const int rates_total,
          sc = ApplyConsensus(sc, localDir2, emaDir2, rsiOK2, consOK2);
       }
 
-      if(sc == SigStrong)
+       if(sc == SigStrong)
       {
          StrongSellBuffer[1] = price[1] + ArrowOffset * _Point;
          firedStrongSell = true;
@@ -1279,6 +1301,7 @@ int OnCalculate(const int rates_total,
          firedEarlySell = true;
       }
        lastSignal = -1;
+       earlyExitShown = false; // новая позиция — сбрасываем флаг раннего выхода
        lastPivotH1AtEntry  = pivotH1;
        lastPivotM15AtEntry = pivotM15;
        lastPivotM5AtEntry  = pivotM5;
@@ -1324,60 +1347,68 @@ int OnCalculate(const int rates_total,
    // Логика выхода (переключаемая)
    if(ExitLogic == Exit_SoftHard)
    {
-      // Soft: по M15 pivot (не сбрасываем lastSignal)
-      if(lastSignal == 1 && lastPivotM15AtEntry>0.0 && price_prev < lastPivotM15AtEntry)
+       // Soft: по M15 pivot (не сбрасываем lastSignal) — отрисовываем один раз на позицию
+       if(!earlyExitShown && lastSignal == 1 && lastPivotM15AtEntry>0.0 && price_prev < lastPivotM15AtEntry)
       {
          EarlyExitBuffer[1] = price[1];
          firedEarlyExit = true;
+          earlyExitShown = true;
       }
-      else if(lastSignal == -1 && lastPivotM15AtEntry>0.0 && price_prev > lastPivotM15AtEntry)
+       else if(!earlyExitShown && lastSignal == -1 && lastPivotM15AtEntry>0.0 && price_prev > lastPivotM15AtEntry)
       {
          EarlyExitBuffer[1] = price[1];
          firedEarlyExit = true;
+          earlyExitShown = true;
       }
       // Hard: по H1 pivot (сброс состояния)
       if(lastSignal == 1 && lastPivotH1AtEntry>0.0 && price_prev < lastPivotH1AtEntry)
       {
-         ExitBuffer[1] = price[1];
-         lastSignal = 0;
+          ExitBuffer[1] = price[1];
+          lastSignal = 0;
+          earlyExitShown = false;
          firedHardExit = true;
       }
       else if(lastSignal == -1 && lastPivotH1AtEntry>0.0 && price_prev > lastPivotH1AtEntry)
       {
-         ExitBuffer[1] = price[1];
-         lastSignal = 0;
+          ExitBuffer[1] = price[1];
+          lastSignal = 0;
+          earlyExitShown = false;
          firedHardExit = true;
       }
    }
    else
    {
       // Один целевой уровень в зависимости от режима (H1, EntryTF, Nearest)
-      if(lastSignal == 1 && lastExitPivot>0.0 && price_prev < lastExitPivot)
+       if(lastSignal == 1 && lastExitPivot>0.0 && price_prev < lastExitPivot)
       {
          ExitBuffer[1] = price[1];
-         lastSignal = 0;
+          lastSignal = 0;
+          earlyExitShown = false;
          firedHardExit = true;
       }
       else if(lastSignal == -1 && lastExitPivot>0.0 && price_prev > lastExitPivot)
       {
          ExitBuffer[1] = price[1];
-         lastSignal = 0;
+          lastSignal = 0;
+          earlyExitShown = false;
          firedHardExit = true;
       }
    }
 
    // Ранний выход по смене тренда M15 против позиции (кроме Exit_SoftHard, где soft = пересечение M15 pivot)
-   if(ExitLogic != Exit_SoftHard)
+    if(ExitLogic != Exit_SoftHard)
    {
-      if(lastSignal == 1 && trendM15 < 0)
+       if(!earlyExitShown && lastSignal == 1 && trendM15 < 0)
       {
          EarlyExitBuffer[1] = price[1];
          firedEarlyExit = true;
+          earlyExitShown = true;
       }
-      else if(lastSignal == -1 && trendM15 > 0)
+       else if(!earlyExitShown && lastSignal == -1 && trendM15 > 0)
       {
          EarlyExitBuffer[1] = price[1];
          firedEarlyExit = true;
+          earlyExitShown = true;
       }
    }
 
@@ -1421,21 +1452,22 @@ int OnCalculate(const int rates_total,
    if(Consensus != Cons_Off)
    {
       int emaD=0; bool rOK=true; double rV=50.0; bool kons=true; string sOK="-";
-   if(ReadFilters(1, emaD, rOK, rV))
+      int dirPanel = 0; bool rsiGoodPanel = true;
+      if(ReadFilters(1, emaD, rOK, rV))
       {
          // Сформируем статус 2/3 без изменения сигналов
-      int votes=1; if(emaD!=0) votes++; // MF-ядро + EMA (направление учтём ниже)
+         int votes=1; if(emaD!=0) votes++; // MF-ядро + EMA (направление учтём ниже)
          // Направление берём по H1-тренду, если он определён
-         int dirPanel = (trendH1>0?+1:(trendH1<0?-1:0));
+         dirPanel = (trendH1>0?+1:(trendH1<0?-1:0));
          if(dirPanel!=0){ if(emaD==dirPanel){} else votes--; }
-      bool rsiGoodPanel = (dirPanel>0 ? (rV <= (RsiOB - RsiHyst)) : (dirPanel<0 ? (rV >= (RsiOS + RsiHyst)) : true));
-      if(rsiGoodPanel) votes++;
+         rsiGoodPanel = (dirPanel>0 ? (rV <= (RsiOB - RsiHyst)) : (dirPanel<0 ? (rV >= (RsiOS + RsiHyst)) : true));
+         if(rsiGoodPanel) votes++;
          bool ok2 = (votes>=2);
          sOK = ok2? (UseRussian?"2/3 ✓":"2/3 ✓") : (UseRussian?"2/3 ✗":"2/3 ✗");
-   }
+      }
       string consText = UseRussian ?
-      StringFormat("Консенсус: %s  | EMA:%s | RSI:%s", sOK, (emaD>0?"↑":(emaD<0?"↓":"–")), ( (trendH1==0)?"–":( (dirPanel>0 ? (rV <= (RsiOB - RsiHyst)) : (rV >= (RsiOS + RsiHyst)) )?"✓":"✗") )) :
-      StringFormat("Consensus: %s  | EMA:%s | RSI:%s", sOK, (emaD>0?"↑":(emaD<0?"↓":"–")), ( (trendH1==0)?"–":( (dirPanel>0 ? (rV <= (RsiOB - RsiHyst)) : (rV >= (RsiOS + RsiHyst)) )?"✓":"✗") ));
+         StringFormat("Консенсус: %s  | EMA:%s | RSI:%s", sOK, (emaD>0?"↑":(emaD<0?"↓":"–")), ( (trendH1==0)?"–":( (dirPanel>0 ? (rV <= (RsiOB - RsiHyst)) : (rV >= (RsiOS + RsiHyst)) )?"✓":"✗") )) :
+         StringFormat("Consensus: %s  | EMA:%s | RSI:%s", sOK, (emaD>0?"↑":(emaD<0?"↓":"–")), ( (trendH1==0)?"–":( (dirPanel>0 ? (rV <= (RsiOB - RsiHyst)) : (rV >= (RsiOS + RsiHyst)) )?"✓":"✗") ));
       DrawRowLabel("MFV_STATUS_CONS", consText, 250);
    }
 
