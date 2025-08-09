@@ -30,6 +30,7 @@ input int    SessionGMTOffset = 2;            // Смещение серверн
 input group "=== Настройки ZigZag ==="
 input int    InpDepth = 12;                   // Глубина ZigZag
 input double InpDeviation = 5.0;              // Отклонение в пунктах
+input double AtrDeviationK = 0.0;             // Коэф. ATR для адаптивного порога (0=выкл)
 
 input group "=== Фильтры MasterForex-V ==="
 input double MinVolumeMultiplier = 1.2;       // Минимальный множитель объема
@@ -46,6 +47,9 @@ input double RetestTolATR_M15     = 0.25;  // Допуск касания: ±0.2
 input double WickRejectMin        = 0.60;  // Мин. доля тени в диапазоне бара
 input bool   UseRetestVolume      = true;  // Учитывать объём на ретесте
 input double RetestVolMult        = 1.20;  // Объём ретеста > 1.2x среднего
+input bool   RetestAllowM5        = true;  // Разрешить ретест на M5 как альтернативу M15
+input int    RetestWindowM5       = 36;    // Окно ретеста в M5-барах (около 3 ч)
+input double RetestTolATR_M5      = 0.35;  // Допуск касания: ±0.35*ATR(M5)
 
 input group "=== Импульс-откат (MF A-B-C на M15) ==="
 input bool   UseImpulseFilter     = true;   // Включить фильтр импульса/отката
@@ -53,6 +57,10 @@ input double ImpulseMinRatio      = 1.5;    // |B−A| / |C−B| минимум 
 input double PullbackMaxFib       = 0.618;  // Максимальная глубина отката (доля импульса)
 input int    ImpulseBackWindowM15 = 48;     // Поиск A перед B (M15-баров)
 input int    PullbackWindowM15    = 12;     // Поиск C после B (M15-баров)
+
+input group "=== Фильтр рыночной фазы (Flat/Trend) ==="
+input bool   UseMarketPhaseFilter = true;   // Включить фильтр флет/тренд
+input double FlatMedianThreshold  = 1.20;   // Порог медианы соотношений качелей (ниже — флет)
 
 input group "=== Clinch вокруг Pivot H1 (MF-V) ==="
 input bool   UseClinchFilter   = true;        // Включить фильтр «схватки»
@@ -82,6 +90,21 @@ input color  PivotD1Color = clrDimGray;       // Цвет D1 Pivot
 input group "=== Размеры стрелок ==="
 input int    ArrowWidth = 2;                  // Толщина стрелок
 input int    ArrowOffset = 10;                // Смещение стрелок в пунктах
+
+// --- Exit mode settings
+enum ExitMode { Exit_H1, Exit_EntryTF, Exit_Nearest, Exit_SoftHard };
+input ExitMode ExitLogic = Exit_H1;           // Режим выхода (по умолчанию H1)
+input double   ExitNearestAtrK = 0.25;        // Мин. дистанция до пивота в ATR(M15) для режима Nearest
+
+// --- Consensus filter settings
+enum ConsensusMode { Cons_Off, Cons_PanelOnly, Cons_GateStrong, Cons_GateStrongNormal, Cons_BlockAll };
+input ConsensusMode  Consensus   = Cons_PanelOnly;
+input int   EmaFast = 50;
+input int   EmaSlow = 200;
+input int   RsiPeriod = 14;
+input double EmaSlopeMin = 0.0;              // минимальный наклон EMA50 в пунктах цены
+input int   RsiOB = 70, RsiOS = 30;          // границы перекуп/перепрод
+input int   RsiHyst = 5;                     // гистерезис
 
 //--- Buy arrow / Стрелка покупки
 #property indicator_label1  "BuyArrow"
@@ -195,6 +218,49 @@ int CopyRatesH1(const int bars, MqlRates &r[])
    return got;
 }
 
+// Оценка рыночной фазы по трём последним качелям (отрезкам) на M15
+// Метод: находим экстремумы простым проходом и считаем длины трёх последних колен; 
+// берём отношения соседних длин, считаем медиану. Если медиана < FlatMedianThreshold — флет.
+bool IsFlatPhase_M15()
+{
+   if(!UseMarketPhaseFilter) return false; // не считаем флет, фильтр выключен
+
+   // Соберём последние N баров для детекции качелей
+   const int N = 200;
+   double h[], l[]; ArraySetAsSeries(h, true); ArraySetAsSeries(l, true);
+   if(CopyHigh(_Symbol, PERIOD_M15, 0, N, h) < 3 || CopyLow(_Symbol, PERIOD_M15, 0, N, l) < 3)
+      return false;
+
+   // Поиск локальных экстремумов простым правилом (3-точечный)
+   int idxs[256]; double px[256]; int cnt=0;
+   for(int i= N-2; i>=1 && cnt<256; --i)
+   {
+      bool isHi = (h[i] > h[i+1] && h[i] > h[i-1]);
+      bool isLo = (l[i] < l[i+1] && l[i] < l[i-1]);
+      if(isHi || isLo){ idxs[cnt]=i; px[cnt]=(isHi? h[i]: l[i]); cnt++; }
+   }
+   if(cnt < 6) return false; // нужно хотя бы 3 колена (6 экстремумов)
+
+   // Возьмём три последних колена (между 4 экстремумами)
+   double len1 = MathAbs(px[0] - px[1]);
+   double len2 = MathAbs(px[1] - px[2]);
+   double len3 = MathAbs(px[2] - px[3]);
+   if(len1<=0 || len2<=0 || len3<=0) return false;
+
+   // Отношения длин соседних колен
+   double r1 = (len1>len2 ? len1/len2 : len2/len1);
+   double r2 = (len2>len3 ? len2/len3 : len3/len2);
+   double r3 = (len1>len3 ? len1/len3 : len3/len1);
+
+   // Медиана трёх значений (ручная сортировка из 3)
+   double a=r1, b=r2, c=r3;
+   if(a>b){ double t=a; a=b; b=t; }
+   if(b>c){ double t=b; b=c; c=t; }
+   if(a>b){ double t=a; a=b; b=t; }
+   double med = b;
+
+   return (med < FlatMedianThreshold);
+}
 bool CheckH1Breakout(const double pivotH1, const int dir)
 {
    // dir = +1 buy, -1 sell
@@ -219,11 +285,13 @@ bool CheckRetestBounce_M15(const double pivotH1, const int dir, datetime fromTim
    double half = RetestTolATR_M15 * atr;
    double top  = pivotH1 + half, bot = pivotH1 - half;
 
+   // Начинаем с конца закрытого H1-часа
+   int shStart = iBarShift(_Symbol, PERIOD_M15, fromTime, false);
    int bars = MathMin(MathMax(RetestWindowM15, 1), 48);
-   for(int i=1; i<=bars; ++i)
+   for(int i=shStart-1, seen=0; i>=1 && seen<bars; --i, ++seen)
    {
       datetime t = iTime(_Symbol, PERIOD_M15, i);
-      if(t < fromTime) break; // ретест должен быть после пробоя
+      if(t <= fromTime) continue; // только строго после закрытия часа
 
       double o=iOpen(_Symbol,PERIOD_M15,i),
              h=iHigh(_Symbol,PERIOD_M15,i),
@@ -251,6 +319,44 @@ bool CheckRetestBounce_M15(const double pivotH1, const int dir, datetime fromTim
    }
    return false;
 }
+
+bool CheckRetestBounce_M5(const double pivotH1, const int dir, datetime fromTime)
+{
+   int shStart = iBarShift(_Symbol, PERIOD_M5, fromTime, false);
+   int bars = MathMin(MathMax(RetestWindowM5, 1), 120);
+   int atrHandle = iATR(_Symbol, PERIOD_M5, 14);
+   double aBuf[]; ArraySetAsSeries(aBuf, true);
+   double atr = 0.0; if(atrHandle!=INVALID_HANDLE && CopyBuffer(atrHandle,0,1,1,aBuf)==1) atr=aBuf[0];
+   if(atr<=0) return false;
+   double half = RetestTolATR_M5 * atr;
+   double top  = pivotH1 + half, bot = pivotH1 - half;
+   for(int i=shStart-1, seen=0; i>=1 && seen<bars; --i, ++seen)
+   {
+      datetime t = iTime(_Symbol, PERIOD_M5, i);
+      if(t <= fromTime) continue;
+      double o=iOpen(_Symbol,PERIOD_M5,i),
+             h=iHigh(_Symbol,PERIOD_M5,i),
+             l=iLow(_Symbol,PERIOD_M5,i),
+             c=iClose(_Symbol,PERIOD_M5,i);
+      long   v=iVolume(_Symbol,PERIOD_M5,i);
+      bool touched = (h>=bot && l<=top);
+      if(!touched) continue;
+      double rangeBar = MathMax(h-l, _Point);
+      double wick     = (dir>0 ? h-c : c-l);
+      bool wickOk     = (rangeBar>0 ? (wick / rangeBar >= WickRejectMin) : false);
+      bool closeOk    = (dir>0 ? c>pivotH1 : c<pivotH1);
+      bool volOk = true;
+      if(UseRetestVolume)
+      {
+         double avg=0.0; int cnt=0;
+         for(int k=i+1; k<=i+20; ++k){ long vv=iVolume(_Symbol,PERIOD_M5,k); if(vv<=0) continue; avg += (double)vv; cnt++; }
+         if(cnt>0) avg/=cnt; else avg=0.0;
+         volOk = (avg>0.0 ? ( (double)v >= RetestVolMult*avg ) : true);
+      }
+      if(closeOk && wickOk && volOk) return true;
+   }
+   return false;
+}
 bool EnsureH1History(const int minBars)
 {
    // Принудительно запрашиваем историю H1, чтобы расчеты работали на любом текущем таймфрейме
@@ -268,6 +374,64 @@ double GetATR_H1()
    return lastAtrH1 > 0 ? lastAtrH1 : 0.0;
 }
 
+// Handles for consensus filters
+int ema50H = INVALID_HANDLE, ema200H = INVALID_HANDLE, rsiH = INVALID_HANDLE;
+
+bool ReadFilters(const int shift, int &emaDir, bool &rsiOK, double &rsiValOut)
+{
+   emaDir = 0; rsiOK = true; rsiValOut = 50.0;
+   if(Consensus == Cons_Off) return true; // ничего не делаем, но не ломаем
+
+   // Берём последний закрытый M15-бар устойчиво (без exact=true)
+   datetime tM15 = iTime(_Symbol, PERIOD_M15, 1);
+   int shM15 = iBarShift(_Symbol, PERIOD_M15, tM15, false);
+   if(shM15 < 1) return false;
+
+   double ema50[2], ema200[2], rsi[1];
+   if(CopyBuffer(ema50H,  0, shM15, 2, ema50)  != 2) return false;
+   if(CopyBuffer(ema200H, 0, shM15, 2, ema200) != 2) return false;
+   if(CopyBuffer(rsiH,    0, shM15, 1, rsi)    != 1) return false;
+
+   double dSlope = ema50[0] - ema50[1];
+   // Нормализуем наклон на ATR(M15); если EmaSlopeMin=0 — не фильтруем по наклону
+   double atrM15 = 0.0;
+   int atrH = iATR(_Symbol, PERIOD_M15, 14);
+   double aBuf[]; ArraySetAsSeries(aBuf, true);
+   if(atrH != INVALID_HANDLE && CopyBuffer(atrH, 0, shM15, 1, aBuf) == 1) atrM15 = aBuf[0];
+   double slopeThresh = (EmaSlopeMin > 0.0 ? (atrM15 > 0.0 ? EmaSlopeMin * atrM15 : EmaSlopeMin * _Point) : 0.0);
+   bool slopeOK = (slopeThresh == 0.0) ? true : (MathAbs(dSlope) >= slopeThresh);
+   if(slopeOK)
+   {
+      if(ema50[0] > ema200[0]) emaDir = +1;
+      else if(ema50[0] < ema200[0]) emaDir = -1;
+      else emaDir = 0;
+   }
+   else emaDir = 0;
+
+   rsiValOut = rsi[0];
+   // rsiOK будет окончательно определён по направлению входа (+1/-1) внешне
+   return true;
+}
+
+SigClass ApplyConsensus(SigClass sc, const int dir, const int emaDir, const bool rsiGood, bool &okOut)
+{
+   okOut = true;
+   if(Consensus == Cons_Off || Consensus == Cons_PanelOnly) return sc;
+   int votes = 1; // MF-ядро
+   if(emaDir == dir) votes++;
+   if(rsiGood) votes++;
+   okOut = (votes >= 2);
+   if(okOut) return sc;
+
+   if(Consensus == Cons_GateStrong && sc == SigStrong) return SigNormal;
+   if(Consensus == Cons_GateStrongNormal)
+   {
+      if(sc == SigStrong) return SigNormal;
+      if(sc == SigNormal) return SigEarly;
+   }
+   if(Consensus == Cons_BlockAll) return SigNone;
+   return sc;
+}
 ClinchStatus CalcClinchH1(const double pivotH1, const int lookback, const int flipsMin,
                           const double rangeMaxATR, const double kATR)
 {
@@ -351,7 +515,8 @@ ClinchStatus CalcClinchH1(const double pivotH1, const int lookback, const int fl
 void DrawClinchZone(const string name, const ClinchStatus &cs, const double pivotH1, const bool isClinch)
 {
    // Нормализуем границы цены
-   double half = ClinchAtrK * GetATR_H1();
+   double baseAtr = (cs.atr>0.0 ? cs.atr : GetATR_H1());
+   double half = ClinchAtrK * baseAtr;
    double top  = pivotH1 + half;
    double bot  = pivotH1 - half;
    if(top < bot){ double t=top; top=bot; bot=t; }
@@ -579,6 +744,11 @@ int OnInit()
    pivotCache.isValid = false;
    pivotCache.lastUpdate = 0;
 
+    // Инициализация фильтров консенсуса
+    ema50H  = iMA(_Symbol, PERIOD_M15, EmaFast, 0, MODE_EMA, PRICE_CLOSE);
+    ema200H = iMA(_Symbol, PERIOD_M15, EmaSlow, 0, MODE_EMA, PRICE_CLOSE);
+    rsiH    = iRSI(_Symbol, PERIOD_M15, RsiPeriod, PRICE_CLOSE);
+
    return(INIT_SUCCEEDED);
 }
 
@@ -608,6 +778,19 @@ void OnDeinit(const int reason)
       ObjectDelete(0, objS1);
       ObjectDelete(0, objS2);
    }
+
+   // Удаление линий и зон, созданных индикатором
+   ObjectDelete(0, "MF_PIVOT_H1");
+   ObjectDelete(0, "MF_PIVOT_M15");
+   ObjectDelete(0, "MF_PIVOT_M5");
+   ObjectDelete(0, "MF_PIVOT_H4");
+   ObjectDelete(0, "MF_PIVOT_D1");
+   ObjectDelete(0, "H1_CLINCH_ZONE");
+   ObjectDelete(0, objPivot);
+   ObjectDelete(0, objR1);
+   ObjectDelete(0, objR2);
+   ObjectDelete(0, objS1);
+   ObjectDelete(0, objS2);
 }
 
 //+------------------------------------------------------------------+
@@ -621,17 +804,32 @@ double GetLastPivot(string symbol, ENUM_TIMEFRAMES tf)
 
    int count = MathMin(bars, 300);
    double close[];
-   if(CopyClose(symbol, tf, 0, count, close) <= 0)
+   // Исключаем текущий незакрытый бар из ZigZag
+   if(CopyClose(symbol, tf, 1, count, close) <= 0)
       return 0.0;
    ArraySetAsSeries(close, true);
 
+   // ATR-адаптация порога ZigZag: deviation = max(InpDeviation*_Point, AtrDeviationK * ATR(tf))
    double deviation = InpDeviation * _Point;
+   if(AtrDeviationK > 0.0)
+   {
+      int atrHandleTf = iATR(symbol, tf, 14);
+      if(atrHandleTf != INVALID_HANDLE)
+      {
+         double atrBuf[]; ArraySetAsSeries(atrBuf, true);
+         if(CopyBuffer(atrHandleTf, 0, 1, 1, atrBuf) == 1)
+         {
+            double atrDev = AtrDeviationK * atrBuf[0];
+            if(atrDev > deviation) deviation = atrDev;
+         }
+      }
+   }
     double last_pivot_price = close[count-1];
     int    last_pivot_index = count-1;     // индекс последнего кандидата в пивот
     int    direction = 0;                   // 0 — не определено, 1 — ищем максимум, -1 — ищем минимум
     const int minDistance = MathMax(1, InpDepth); // минимальная дистанция между пивотами
    
-   for(int i = count-2; i >= 0; --i)
+   for(int i = count-2; i >= 1; --i) // не заходим на i==0 (текущий бар)
    {
       double price = close[i];
        if(direction == 0)
@@ -697,8 +895,9 @@ void UpdatePivotCache()
 //+------------------------------------------------------------------+
 //| Determine trend / Определение тренда                              |
 //+------------------------------------------------------------------+
-int GetTrend(double price, double pivot, double tol=0.0001)
+int GetTrend(double price, double pivot, double tol_param=0.0)
 {
+   double tol = (tol_param>0.0 ? tol_param : MathMax(2*_Point, (AtrDeviationK>0.0 ? 0.1*GetATR_H1() : 2*_Point)));
    if(price > pivot + tol) return 1;
    if(price < pivot - tol) return -1;
    return 0;
@@ -793,14 +992,21 @@ int OnCalculate(const int rates_total,
    ReverseBuffer[0]    = EMPTY_VALUE;
    StrongBuyBuffer[0]  = EMPTY_VALUE;
    StrongSellBuffer[0] = EMPTY_VALUE;
+   EarlyExitBuffer[0]  = EMPTY_VALUE;
 
-   double price_now = price[0];
+   // Работаем ТОЛЬКО с закрытыми барами для логики
+   double price_prev = price[1];
 
    // Статические переменные для отслеживания состояния
-   static int    lastSignal   = 0;
-   static double lastPivot    = 0.0;
+   static int    lastSignal   = 0;   // 1 buy, -1 sell, 0 none
+   static double lastPivot    = 0.0; // legacy for H1
    static int    lastTrendH1  = 0;
    static int    lastTrendM15 = 0;
+   // Пивоты, зафиксированные на баре входа (для разных режимов выхода)
+   static double lastPivotH1AtEntry  = 0.0;
+   static double lastPivotM15AtEntry = 0.0;
+   static double lastPivotM5AtEntry  = 0.0;
+   static double lastExitPivot       = 0.0; // выбранный уровень выхода для режимов Exit_H1/EntryTF/Nearest
 
    // Обновление кэша pivot значений
    UpdatePivotCache();
@@ -821,11 +1027,11 @@ int OnCalculate(const int rates_total,
    }
 
    // Определение трендов
-   int trendH1  = GetTrend(price_now, pivotH1);
-   int trendM15 = GetTrend(price_now, pivotM15);
-   int trendM5  = GetTrend(price_now, pivotM5);
-   int trendH4  = GetTrend(price_now, mfPivotH4);
-   int trendD1  = GetTrend(price_now, mfPivotD1);
+   int trendH1  = GetTrend(price_prev, pivotH1);
+   int trendM15 = GetTrend(price_prev, pivotM15);
+   int trendM5  = GetTrend(price_prev, pivotM5);
+   int trendH4  = GetTrend(price_prev, mfPivotH4);
+   int trendD1  = GetTrend(price_prev, mfPivotD1);
 
    // Анализ MasterForex-V
    TrendAnalysis analysis;
@@ -895,6 +1101,9 @@ int OnCalculate(const int rates_total,
    bool canTrade = analysis.sessionValid && analysis.volumeConfirmed && analysis.strength >= MinTrendStrength;
    bool earlyCanTrade = analysis.sessionValid && analysis.volumeConfirmed && analysis.strength >= MinEarlyTrendStrength;
 
+   // Детектор фазы рынка (флет): даунгрейд классов до Early
+   bool isFlat = IsFlatPhase_M15();
+
    // Расчет CLINCH по pivotH1 (не чаще 1 H1-бара). Обеспечиваем историю H1 на любом ТФ
    static ClinchStatus clinchState;
    EnsureH1History(MathMax(ClinchLookbackH1 + 20, 100));
@@ -927,7 +1136,11 @@ int OnCalculate(const int rates_total,
          if(needConfirm && !clinchState.isClinch)
          {
             bool okH1  = CheckH1Breakout(pivotH1, dir);
-            bool okRet = CheckRetestBounce_M15(pivotH1, dir, iTime(_Symbol, PERIOD_H1, 1));
+          datetime h1_open = iTime(_Symbol, PERIOD_H1, 1);
+          datetime fromTime = h1_open + PeriodSeconds(PERIOD_H1);
+            bool okRetM15 = CheckRetestBounce_M15(pivotH1, dir, fromTime);
+            bool okRetM5  = (RetestAllowM5 ? CheckRetestBounce_M5(pivotH1, dir, fromTime) : false);
+            bool okRet = (okRetM15 || okRetM5);
             bool okBoth = okH1 && okRet;
             if(sc==SigStrong && !okBoth)        sc = SigNormal;
             else if(sc==SigNormal && !okH1)     sc = SigEarly;
@@ -942,6 +1155,17 @@ int OnCalculate(const int rates_total,
          if(sc==SigEarly && okImpulse) sc = SigNormal; // апгрейд раннего за счёт здорового импульса
          if(!okImpulse && sc==SigNormal) sc = SigEarly; // глубокий откат — понижаем
       }
+      if(isFlat && sc!=SigNone) sc = SigEarly;
+      // Consensus voting (after Clinch, before rendering)
+      int emaDir=0; bool rsiOK=true; double rsiVal=50.0; bool consOK=true;
+      if(ReadFilters(1, emaDir, rsiOK, rsiVal))
+      {
+         // для покупок: rsi ок, если не перекуплено; для продаж: не перепродано
+         int localDir = +1;
+         rsiOK = (rsiVal <= (RsiOB - RsiHyst));
+         sc = ApplyConsensus(sc, localDir, emaDir, rsiOK, consOK);
+      }
+
       if(sc == SigStrong)
       {
          StrongBuyBuffer[1] = price[1] - ArrowOffset * _Point;
@@ -958,8 +1182,42 @@ int OnCalculate(const int rates_total,
          EarlyBuyBuffer[1] = price[1] - ArrowOffset * _Point;
          firedEarlyBuy = true;
       }
-      lastSignal = 1;
-      lastPivot  = pivotH1;
+       lastSignal = 1;
+       // Зафиксировать уровни на момент входа
+       lastPivotH1AtEntry  = pivotH1;
+       lastPivotM15AtEntry = pivotM15;
+       lastPivotM5AtEntry  = pivotM5;
+       // Выбрать целевой уровень выхода в зависимости от режима
+       if(ExitLogic == Exit_H1)
+       {
+          lastExitPivot = lastPivotH1AtEntry;
+       }
+       else if(ExitLogic == Exit_EntryTF)
+       {
+          lastExitPivot = lastPivotM5AtEntry;
+       }
+       else if(ExitLogic == Exit_Nearest)
+       {
+          // Выбор ближайшего пивота среди M5/M15/H1 с учётом минимальной дистанции в ATR(M15)
+          int atrHandleN = iATR(_Symbol, PERIOD_M15, 14);
+          double aBuf[]; ArraySetAsSeries(aBuf, true);
+          double atrM15 = 0.0; if(atrHandleN!=INVALID_HANDLE && CopyBuffer(atrHandleN,0,1,1,aBuf)==1) atrM15=aBuf[0];
+          double minAllowed = ExitNearestAtrK * atrM15;
+          double candidates[3]; candidates[0]=lastPivotM5AtEntry; candidates[1]=lastPivotM15AtEntry; candidates[2]=lastPivotH1AtEntry;
+          // дистанция считаем от цены входа (закрытая цена бара входа)
+          double entryPrice = price[1];
+          double best = lastPivotH1AtEntry; double bestDist = 1e100;
+          for(int ci=0; ci<3; ++ci)
+          {
+             double pv = candidates[ci];
+             double d  = MathAbs(entryPrice - pv);
+             if(minAllowed>0.0 && d < minAllowed) continue; // слишком близко
+             if(d < bestDist){ bestDist=d; best=pv; }
+          }
+          lastExitPivot = best;
+       }
+       // legacy совместимость
+       lastPivot = lastPivotH1AtEntry;
    }
    else if(trendH1 == -1 && trendM15 == -1 && trendM5 == -1 && canTrade)
    {
@@ -977,7 +1235,11 @@ int OnCalculate(const int rates_total,
          if(needConfirm && !clinchState.isClinch)
          {
             bool okH1  = CheckH1Breakout(pivotH1, dir);
-            bool okRet = CheckRetestBounce_M15(pivotH1, dir, iTime(_Symbol, PERIOD_H1, 1));
+          datetime h1_open2 = iTime(_Symbol, PERIOD_H1, 1);
+          datetime fromTime2 = h1_open2 + PeriodSeconds(PERIOD_H1);
+          bool okRetM15b = CheckRetestBounce_M15(pivotH1, dir, fromTime2);
+          bool okRetM5b  = (RetestAllowM5 ? CheckRetestBounce_M5(pivotH1, dir, fromTime2) : false);
+          bool okRet = (okRetM15b || okRetM5b);
             bool okBoth = okH1 && okRet;
             if(sc==SigStrong && !okBoth)        sc = SigNormal;
             else if(sc==SigNormal && !okH1)     sc = SigEarly;
@@ -991,6 +1253,16 @@ int OnCalculate(const int rates_total,
          if(sc==SigEarly && okImpulse) sc = SigNormal;
          if(!okImpulse && sc==SigNormal) sc = SigEarly;
       }
+      if(isFlat && sc!=SigNone) sc = SigEarly;
+      // Consensus voting (after Clinch, before rendering)
+      int emaDir2=0; bool rsiOK2=true; double rsiVal2=50.0; bool consOK2=true;
+      if(ReadFilters(1, emaDir2, rsiOK2, rsiVal2))
+      {
+         int localDir2 = -1;
+         rsiOK2 = (rsiVal2 >= (RsiOS + RsiHyst));
+         sc = ApplyConsensus(sc, localDir2, emaDir2, rsiOK2, consOK2);
+      }
+
       if(sc == SigStrong)
       {
          StrongSellBuffer[1] = price[1] + ArrowOffset * _Point;
@@ -1006,8 +1278,37 @@ int OnCalculate(const int rates_total,
          EarlySellBuffer[1] = price[1] + ArrowOffset * _Point;
          firedEarlySell = true;
       }
-      lastSignal = -1;
-      lastPivot  = pivotH1;
+       lastSignal = -1;
+       lastPivotH1AtEntry  = pivotH1;
+       lastPivotM15AtEntry = pivotM15;
+       lastPivotM5AtEntry  = pivotM5;
+       if(ExitLogic == Exit_H1)
+       {
+          lastExitPivot = lastPivotH1AtEntry;
+       }
+       else if(ExitLogic == Exit_EntryTF)
+       {
+          lastExitPivot = lastPivotM5AtEntry;
+       }
+       else if(ExitLogic == Exit_Nearest)
+       {
+          int atrHandleN2 = iATR(_Symbol, PERIOD_M15, 14);
+          double aBuf2[]; ArraySetAsSeries(aBuf2, true);
+          double atrM152 = 0.0; if(atrHandleN2!=INVALID_HANDLE && CopyBuffer(atrHandleN2,0,1,1,aBuf2)==1) atrM152=aBuf2[0];
+          double minAllowed2 = ExitNearestAtrK * atrM152;
+          double candidates2[3]; candidates2[0]=lastPivotM5AtEntry; candidates2[1]=lastPivotM15AtEntry; candidates2[2]=lastPivotH1AtEntry;
+          double entryPrice2 = price[1];
+          double best2 = lastPivotH1AtEntry; double bestDist2 = 1e100;
+          for(int cj=0; cj<3; ++cj)
+          {
+             double pv = candidates2[cj];
+             double d  = MathAbs(entryPrice2 - pv);
+             if(minAllowed2>0.0 && d < minAllowed2) continue;
+             if(d < bestDist2){ bestDist2=d; best2=pv; }
+          }
+          lastExitPivot = best2;
+       }
+       lastPivot = lastPivotH1AtEntry;
    }
    else if(trendH1 == 1 && trendM5 == 1 && trendM15 != 1 && earlyCanTrade)
    {
@@ -1020,35 +1321,64 @@ int OnCalculate(const int rates_total,
       firedEarlySell = true;
    }
 
-   // Логика выхода
-   if(lastSignal == 1 && price_now < lastPivot)
+   // Логика выхода (переключаемая)
+   if(ExitLogic == Exit_SoftHard)
    {
-      ExitBuffer[1] = price[1];
-      lastSignal = 0;
-      firedHardExit = true;
+      // Soft: по M15 pivot (не сбрасываем lastSignal)
+      if(lastSignal == 1 && lastPivotM15AtEntry>0.0 && price_prev < lastPivotM15AtEntry)
+      {
+         EarlyExitBuffer[1] = price[1];
+         firedEarlyExit = true;
+      }
+      else if(lastSignal == -1 && lastPivotM15AtEntry>0.0 && price_prev > lastPivotM15AtEntry)
+      {
+         EarlyExitBuffer[1] = price[1];
+         firedEarlyExit = true;
+      }
+      // Hard: по H1 pivot (сброс состояния)
+      if(lastSignal == 1 && lastPivotH1AtEntry>0.0 && price_prev < lastPivotH1AtEntry)
+      {
+         ExitBuffer[1] = price[1];
+         lastSignal = 0;
+         firedHardExit = true;
+      }
+      else if(lastSignal == -1 && lastPivotH1AtEntry>0.0 && price_prev > lastPivotH1AtEntry)
+      {
+         ExitBuffer[1] = price[1];
+         lastSignal = 0;
+         firedHardExit = true;
+      }
    }
-   else if(lastSignal == -1 && price_now > lastPivot)
+   else
    {
-      ExitBuffer[1] = price[1];
-      lastSignal = 0;
-      firedHardExit = true;
+      // Один целевой уровень в зависимости от режима (H1, EntryTF, Nearest)
+      if(lastSignal == 1 && lastExitPivot>0.0 && price_prev < lastExitPivot)
+      {
+         ExitBuffer[1] = price[1];
+         lastSignal = 0;
+         firedHardExit = true;
+      }
+      else if(lastSignal == -1 && lastExitPivot>0.0 && price_prev > lastExitPivot)
+      {
+         ExitBuffer[1] = price[1];
+         lastSignal = 0;
+         firedHardExit = true;
+      }
    }
 
-   // Ранний выход по смене тренда M15 против позиции
-   if(lastSignal == 1 && trendM15 < 0)
+   // Ранний выход по смене тренда M15 против позиции (кроме Exit_SoftHard, где soft = пересечение M15 pivot)
+   if(ExitLogic != Exit_SoftHard)
    {
-      // Мягкий (soft) выход
-      // Для визуализации используем тот же стиль, но другой цвет/буфер
-      // EarlyExitBuffer будет отрисован отдельным слоем
-      // Координата по цене текущего бара-1
-      // Примечание: не сбрасываем lastSignal, это индикатор, не EA
-      EarlyExitBuffer[1] = price[1];
-      firedEarlyExit = true;
-   }
-   else if(lastSignal == -1 && trendM15 > 0)
-   {
-      EarlyExitBuffer[1] = price[1];
-      firedEarlyExit = true;
+      if(lastSignal == 1 && trendM15 < 0)
+      {
+         EarlyExitBuffer[1] = price[1];
+         firedEarlyExit = true;
+      }
+      else if(lastSignal == -1 && trendM15 > 0)
+      {
+         EarlyExitBuffer[1] = price[1];
+         firedEarlyExit = true;
+      }
    }
 
    // Логика разворота
@@ -1080,6 +1410,34 @@ int OnCalculate(const int rates_total,
       StringFormat("Схватка: %s, flips=%d, range=%.2f ATR, zone=±%.2f ATR", clinchOn, clinchState.flips, rangeAtr, ClinchAtrK) :
       StringFormat("Clinch: %s, flips=%d, range=%.2f ATR, zone=±%.2f ATR", clinchOn, clinchState.flips, rangeAtr, ClinchAtrK);
    DrawRowLabel("MFV_STATUS_CLINCH", clinchText, 210);
+
+   // Фаза рынка (Flat/Trend) — строкой под Clinch
+   string phaseText = UseRussian ?
+      StringFormat("Фаза: %s", isFlat ? "Флет" : "Тренд") :
+      StringFormat("Phase: %s", isFlat ? "Flat" : "Trend");
+   DrawRowLabel("MFV_STATUS_PHASE", phaseText, 230);
+
+   // Панель консенсуса, если включено
+   if(Consensus != Cons_Off)
+   {
+      int emaD=0; bool rOK=true; double rV=50.0; bool kons=true; string sOK="-";
+   if(ReadFilters(1, emaD, rOK, rV))
+      {
+         // Сформируем статус 2/3 без изменения сигналов
+      int votes=1; if(emaD!=0) votes++; // MF-ядро + EMA (направление учтём ниже)
+         // Направление берём по H1-тренду, если он определён
+         int dirPanel = (trendH1>0?+1:(trendH1<0?-1:0));
+         if(dirPanel!=0){ if(emaD==dirPanel){} else votes--; }
+      bool rsiGoodPanel = (dirPanel>0 ? (rV <= (RsiOB - RsiHyst)) : (dirPanel<0 ? (rV >= (RsiOS + RsiHyst)) : true));
+      if(rsiGoodPanel) votes++;
+         bool ok2 = (votes>=2);
+         sOK = ok2? (UseRussian?"2/3 ✓":"2/3 ✓") : (UseRussian?"2/3 ✗":"2/3 ✗");
+   }
+      string consText = UseRussian ?
+      StringFormat("Консенсус: %s  | EMA:%s | RSI:%s", sOK, (emaD>0?"↑":(emaD<0?"↓":"–")), ( (trendH1==0)?"–":( (dirPanel>0 ? (rV <= (RsiOB - RsiHyst)) : (rV >= (RsiOS + RsiHyst)) )?"✓":"✗") )) :
+      StringFormat("Consensus: %s  | EMA:%s | RSI:%s", sOK, (emaD>0?"↑":(emaD<0?"↓":"–")), ( (trendH1==0)?"–":( (dirPanel>0 ? (rV <= (RsiOB - RsiHyst)) : (rV >= (RsiOS + RsiHyst)) )?"✓":"✗") ));
+      DrawRowLabel("MFV_STATUS_CONS", consText, 250);
+   }
 
    // Отрисовка линий Pivot
    DrawOrUpdateLine("MF_PIVOT_H1",  pivotH1,  PivotH1Color,     2);
