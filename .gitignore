@@ -72,8 +72,7 @@ MQL5/Logs/
 MQL5/Profiles/
 
 # Project-specific
-results.txt
-*.pdf
+
 
 # Keep data and sources tracked (do NOT ignore)
 !*.mq5
