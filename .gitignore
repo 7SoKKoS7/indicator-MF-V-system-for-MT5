@@ -1,0 +1,81 @@
+# Python caches and artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.pytype/
+.pyre/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Build/distribution
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+pip-wheel-metadata/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Test/coverage
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Logs and temp
+*.log
+*.tmp
+*.temp
+logs/
+tmp/
+temp/
+
+# Editors/IDEs
+.vscode/
+.idea/
+.history/
+.vs/
+*.code-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Cursor
+.cursor/
+!.cursorrules
+
+# MetaTrader 4/5 compiled artifacts and common folders
+*.ex4
+*.ex5
+MQL5/Tester/
+MQL5/Logs/
+MQL5/Profiles/
+
+# Project-specific
+results.txt
+*.pdf
+
+# Keep data and sources tracked (do NOT ignore)
+!*.mq5
+# CSV файлы оставляем в репозитории (нет общего правила *.csv)
+
