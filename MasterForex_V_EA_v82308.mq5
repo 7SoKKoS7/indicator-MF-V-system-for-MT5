@@ -37,6 +37,7 @@ input int      ForceSetStopsDelayMs = 500;  // Пауза между попыт�
 
 // Минимальная дистанция (в пипсах 4‑знака) если брокер сообщает StopsLevel=0
 input int      FallbackMinPips    = 50;     // Дистанция безопасности, 50 пипсов = 0.0050 для EURUSD
+input int      StopBufferPips     = 5;      // Дополнительный буфер к минимальной дистанции
 
 // --- Параметры расчёта MF‑pivot (должны соответствовать индикатору)
 input int      InpDepthEA         = 12;     // Глубина ZigZag для пивота
@@ -160,7 +161,9 @@ double GetMinStopDistance()
       double pip = ((_Digits==5 || _Digits==3) ? 10.0*_Point : _Point);
       dist = MathMax(5*_Point, (double)FallbackMinPips * pip);
    }
-   return dist;
+   // всегда добавляем небольшой буфер сверх минимальной дистанции
+   double pip = ((_Digits==5 || _Digits==3) ? 10.0*_Point : _Point);
+   return dist + (double)StopBufferPips * pip;
 }
 
 void EnsureStopsMinDistance(const int dir, const double entry, double &sl, double &tp)
