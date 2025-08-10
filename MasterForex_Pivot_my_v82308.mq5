@@ -818,6 +818,7 @@ double GetLastPivot(string symbol, ENUM_TIMEFRAMES tf)
    if(CopyClose(symbol, tf, 1, count, close) <= 0)
       return 0.0;
    ArraySetAsSeries(close, true);
+   if(count < 3) return 0.0; // защита от выхода за пределы массива
 
    // ATR-адаптация порога ZigZag: deviation = max(InpDeviation*_Point, AtrDeviationK * ATR(tf))
    double deviation = InpDeviation * _Point;
