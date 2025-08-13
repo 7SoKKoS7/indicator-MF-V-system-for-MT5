@@ -108,6 +108,7 @@ input bool   ShowExitSignals    = true;       // Показывать выход
 input bool   ShowReversalSignals= true;       // Показывать развороты (аква)
 input bool   ShowHistorySignals = true;       // Исторические стрелки (иначе — только последнюю)
 input int    SignalsLookbackBars= 500;        // Ограничение истории стрелок (закрытые бары)
+input int    MinBarsBetweenArrows = 6;        // Минимум баров между одинаковыми стрелками
 
 // --- Exit mode settings
 enum ExitMode { Exit_H1, Exit_EntryTF, Exit_Nearest, Exit_SoftHard };
@@ -1280,6 +1281,10 @@ int OnCalculate(const int rates_total,
    static double lastPivotM5AtEntry  = 0.0;
    static double lastExitPivot       = 0.0; // выбранный уровень выхода для режимов Exit_H1/EntryTF/Nearest
    static bool   earlyExitShown      = false; // чтобы ранний выход рисовался один раз на позицию
+   static int    lastArrowBarBuy     = -10000;
+   static int    lastArrowBarSell    = -10000;
+   static int    lastArrowBarEarlyB  = -10000;
+   static int    lastArrowBarEarlyS  = -10000;
 
    // Обновление dual‑pivot значений
    UpdatePivotsCache();
@@ -1441,21 +1446,24 @@ int OnCalculate(const int rates_total,
          sc = ApplyConsensus(sc, localDir, emaDir, rsiOK, consOK);
       }
 
-      if(sc == SigStrong && ShowStrongSignals)
+      if(sc == SigStrong && ShowStrongSignals && ( (rates_total-1) - lastArrowBarBuy >= MinBarsBetweenArrows) )
       {
          StrongBuyBuffer[1] = price[1] - ArrowOffset * _Point;
          firedStrongBuy = true;
+         lastArrowBarBuy = rates_total-1;
       }
-      else if(sc == SigNormal && ShowNormalSignals)
+      else if(sc == SigNormal && ShowNormalSignals && ( (rates_total-1) - lastArrowBarBuy >= MinBarsBetweenArrows) )
       {
          BuyArrowBuffer[1] = price[1] - ArrowOffset * _Point;
          firedBuy = true;
+         lastArrowBarBuy = rates_total-1;
       }
       // если понижен до SigEarly — отрисуем ранний вход
-      else if(sc == SigEarly && ShowEarlySignals)
+      else if(sc == SigEarly && ShowEarlySignals && ( (rates_total-1) - lastArrowBarEarlyB >= MinBarsBetweenArrows) )
       {
          EarlyBuyBuffer[1] = price[1] - ArrowOffset * _Point;
          firedEarlyBuy = true;
+         lastArrowBarEarlyB = rates_total-1;
       }
        lastSignal = 1;
        earlyExitShown = false; // новая позиция — сбрасываем флаг раннего выхода
@@ -1539,20 +1547,23 @@ int OnCalculate(const int rates_total,
          sc = ApplyConsensus(sc, localDir2, emaDir2, rsiOK2, consOK2);
       }
 
-       if(sc == SigStrong && ShowStrongSignals)
+       if(sc == SigStrong && ShowStrongSignals && ( (rates_total-1) - lastArrowBarSell >= MinBarsBetweenArrows) )
       {
          StrongSellBuffer[1] = price[1] + ArrowOffset * _Point;
          firedStrongSell = true;
+         lastArrowBarSell = rates_total-1;
       }
-      else if(sc == SigNormal && ShowNormalSignals)
+      else if(sc == SigNormal && ShowNormalSignals && ( (rates_total-1) - lastArrowBarSell >= MinBarsBetweenArrows) )
       {
          SellArrowBuffer[1] = price[1] + ArrowOffset * _Point;
          firedSell = true;
+         lastArrowBarSell = rates_total-1;
       }
-      else if(sc == SigEarly && ShowEarlySignals)
+      else if(sc == SigEarly && ShowEarlySignals && ( (rates_total-1) - lastArrowBarEarlyS >= MinBarsBetweenArrows) )
       {
          EarlySellBuffer[1] = price[1] + ArrowOffset * _Point;
          firedEarlySell = true;
+         lastArrowBarEarlyS = rates_total-1;
       }
        lastSignal = -1;
        earlyExitShown = false; // новая позиция — сбрасываем флаг раннего выхода
@@ -1587,15 +1598,17 @@ int OnCalculate(const int rates_total,
        }
        lastPivot = lastPivotH1AtEntry;
    }
-   else if(trendH1 == 1 && trendM5 == 1 && trendM15 != 1 && earlyCanTrade && ShowEarlySignals)
+   else if(trendH1 == 1 && trendM5 == 1 && trendM15 != 1 && earlyCanTrade && ShowEarlySignals && ( (rates_total-1) - lastArrowBarEarlyB >= MinBarsBetweenArrows) )
    {
       EarlyBuyBuffer[1] = price[1] - ArrowOffset * _Point;
       firedEarlyBuy = true;
+      lastArrowBarEarlyB = rates_total-1;
    }
-   else if(trendH1 == -1 && trendM5 == -1 && trendM15 != -1 && earlyCanTrade && ShowEarlySignals)
+   else if(trendH1 == -1 && trendM5 == -1 && trendM15 != -1 && earlyCanTrade && ShowEarlySignals && ( (rates_total-1) - lastArrowBarEarlyS >= MinBarsBetweenArrows) )
    {
       EarlySellBuffer[1] = price[1] + ArrowOffset * _Point;
       firedEarlySell = true;
+      lastArrowBarEarlyS = rates_total-1;
    }
 
    // Логика выхода (переключаемая)
@@ -1681,8 +1694,8 @@ int OnCalculate(const int rates_total,
    else if(firedStrongSell) signalText = (UseRussian ? "Сигнал: Сильная продажа" : "Signal: Strong SELL");
    else if(firedBuy)    signalText = (UseRussian ? "Сигнал: Покупка" : "Signal: BUY");
    else if(firedSell)   signalText = (UseRussian ? "Сигнал: Продажа" : "Signal: SELL");
-   else if(firedEarlyBuy)  signalText = (UseRussian ? "Сигнал: Ранний вход (BUY)" : "Signal: Early BUY");
-   else if(firedEarlySell) signalText = (UseRussian ? "Сигнал: Ранний вход (SELL)" : "Signal: Early SELL");
+   else if(firedEarlyBuy)  signalText = (UseRussian ? "Сигнал: Ранний BUY" : "Signal: Early BUY");
+   else if(firedEarlySell) signalText = (UseRussian ? "Сигнал: Ранний SELL" : "Signal: Early SELL");
    else if(firedEarlyExit) signalText = (UseRussian ? "Сигнал: Ранний выход" : "Signal: Early EXIT");
    else if(firedHardExit)  signalText = (UseRussian ? "Сигнал: Выход (H1 Pivot)" : "Signal: HARD EXIT");
    else if(firedReversal)  signalText = (UseRussian ? "Сигнал: Разворот" : "Signal: Reversal");
