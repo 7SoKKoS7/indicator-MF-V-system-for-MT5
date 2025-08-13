@@ -21,7 +21,7 @@ enum ConfirmMode { Confirm_Off, Confirm_StrongOnly, Confirm_StrongAndNormal, Con
 //--- Input Parameters / Входные параметры
 input group "=== Основные настройки ==="
 input bool   UseRussian = false;              // Подписи на русском языке
-input bool   ShowClassicPivot = true;         // Показывать классические уровни Pivot
+input bool   ShowClassicPivot = false;         // Показывать классические уровни Pivot
 input bool   ShowStatusInfo = true;           // Показывать информацию о статусе
 input bool   EnableVolumeFilter = true;       // Фильтр по объему
 input bool   EnableSessionFilter = true;      // Фильтр торговых сессий
@@ -109,6 +109,10 @@ input bool   ShowReversalSignals= true;       // Показывать разво
 input bool   ShowHistorySignals = true;       // Исторические стрелки (иначе — только последнюю)
 input int    SignalsLookbackBars= 500;        // Ограничение истории стрелок (закрытые бары)
 input int    MinBarsBetweenArrows = 6;        // Минимум баров между одинаковыми стрелками
+
+// Якорение стрелок к базовому ТФ, чтобы сигналы были одинаковыми на всех графиках
+enum AnchorMode { Anchor_Current, Anchor_M5 };
+input AnchorMode SignalAnchor = Anchor_M5;    // На каком ТФ фиксировать время сигнала при отрисовке
 
 // --- Exit mode settings
 enum ExitMode { Exit_H1, Exit_EntryTF, Exit_Nearest, Exit_SoftHard };
@@ -1125,6 +1129,27 @@ void DrawOrUpdateLine(string name, double price, color clr, int width=1, ENUM_LI
    }
 }
 
+// Отрисовка стрелки, привязанной к времени базового ТФ (для единых сигналов на всех графиках)
+void DrawAnchoredArrow(double &buffer[], const double priceAtCurrentTF, const color col)
+{
+   // Стрелки пишутся в буфер по индексу [shift]; определим shift через якорный ТФ (обычно M5)
+   int shiftCurrent = 1; // рисуем на закрытом баре текущего ТФ
+   if(SignalAnchor == Anchor_Current)
+   {
+      buffer[shiftCurrent] = priceAtCurrentTF;
+      return;
+   }
+   // Anchor_M5: берём время закрытия бара M5[1], ищем соответствующий бар на текущем ТФ
+   datetime tAnchor = iTime(_Symbol, PERIOD_M5, 1);
+   if(tAnchor == 0)
+   {
+      buffer[shiftCurrent] = priceAtCurrentTF; // fallback
+      return;
+   }
+   int sh = iBarShift(_Symbol, (ENUM_TIMEFRAMES)Period(), tAnchor, false);
+   if(sh < 1) sh = 1;
+   buffer[sh] = priceAtCurrentTF;
+}
 // Отрисовка статуса «разогрева» истории/буферов
 void DrawWarmupStatus(const bool okH1, const int haveH1, const int needH1,
                       const bool okM15, const int haveM15, const int needM15,
@@ -1401,7 +1426,13 @@ int OnCalculate(const int rates_total,
       lastClinchCalcOnH1 = (lastH1Bar == 0 ? TimeCurrent() : lastH1Bar);
       // Отрисовываем зону, если отключен фильтр показа или если зона была потрогана ценой
       if(!ShowClinchZoneOnlyIfTouched || clinchState.touched)
-         DrawClinchZone("H1_CLINCH_ZONE", clinchState, 0.0, clinchState.isClinch);
+      {
+         // Не рисуем клинч, если диапазон за Lookback слишком большой относительно ATR(H1)
+         if(clinchState.atr > 0 && clinchState.range <= ClinchRangeMaxATR * clinchState.atr)
+            DrawClinchZone("H1_CLINCH_ZONE", clinchState, 0.0, clinchState.isClinch);
+         else
+            ObjectDelete(0, "H1_CLINCH_ZONE");
+      }
       else
          ObjectDelete(0, "H1_CLINCH_ZONE");
    }
@@ -1455,20 +1486,20 @@ int OnCalculate(const int rates_total,
 
       if(sc == SigStrong && ShowStrongSignals && ( (rates_total-1) - lastArrowBarBuy >= MinBarsBetweenArrows) )
       {
-         StrongBuyBuffer[1] = price[1] - ArrowOffset * _Point;
+         DrawAnchoredArrow(StrongBuyBuffer, price[1] - ArrowOffset * _Point, StrongSignalColor);
          firedStrongBuy = true;
          lastArrowBarBuy = rates_total-1;
       }
       else if(sc == SigNormal && ShowNormalSignals && ( (rates_total-1) - lastArrowBarBuy >= MinBarsBetweenArrows) )
       {
-         BuyArrowBuffer[1] = price[1] - ArrowOffset * _Point;
+         DrawAnchoredArrow(BuyArrowBuffer, price[1] - ArrowOffset * _Point, BuyArrowColor);
          firedBuy = true;
          lastArrowBarBuy = rates_total-1;
       }
       // если понижен до SigEarly — отрисуем ранний вход
       else if(sc == SigEarly && ShowEarlySignals && ( (rates_total-1) - lastArrowBarEarlyB >= MinBarsBetweenArrows) )
       {
-         EarlyBuyBuffer[1] = price[1] - ArrowOffset * _Point;
+         DrawAnchoredArrow(EarlyBuyBuffer, price[1] - ArrowOffset * _Point, EarlyBuyColor);
          firedEarlyBuy = true;
          lastArrowBarEarlyB = rates_total-1;
       }
@@ -1556,19 +1587,19 @@ int OnCalculate(const int rates_total,
 
        if(sc == SigStrong && ShowStrongSignals && ( (rates_total-1) - lastArrowBarSell >= MinBarsBetweenArrows) )
       {
-         StrongSellBuffer[1] = price[1] + ArrowOffset * _Point;
+         DrawAnchoredArrow(StrongSellBuffer, price[1] + ArrowOffset * _Point, StrongSignalColor);
          firedStrongSell = true;
          lastArrowBarSell = rates_total-1;
       }
       else if(sc == SigNormal && ShowNormalSignals && ( (rates_total-1) - lastArrowBarSell >= MinBarsBetweenArrows) )
       {
-         SellArrowBuffer[1] = price[1] + ArrowOffset * _Point;
+         DrawAnchoredArrow(SellArrowBuffer, price[1] + ArrowOffset * _Point, SellArrowColor);
          firedSell = true;
          lastArrowBarSell = rates_total-1;
       }
       else if(sc == SigEarly && ShowEarlySignals && ( (rates_total-1) - lastArrowBarEarlyS >= MinBarsBetweenArrows) )
       {
-         EarlySellBuffer[1] = price[1] + ArrowOffset * _Point;
+         DrawAnchoredArrow(EarlySellBuffer, price[1] + ArrowOffset * _Point, EarlySellColor);
          firedEarlySell = true;
          lastArrowBarEarlyS = rates_total-1;
       }
@@ -1607,13 +1638,13 @@ int OnCalculate(const int rates_total,
    }
    else if(trendH1 == 1 && trendM5 == 1 && trendM15 != 1 && earlyCanTrade && ShowEarlySignals && ( (rates_total-1) - lastArrowBarEarlyB >= MinBarsBetweenArrows) )
    {
-      EarlyBuyBuffer[1] = price[1] - ArrowOffset * _Point;
+      DrawAnchoredArrow(EarlyBuyBuffer, price[1] - ArrowOffset * _Point, EarlyBuyColor);
       firedEarlyBuy = true;
       lastArrowBarEarlyB = rates_total-1;
    }
    else if(trendH1 == -1 && trendM5 == -1 && trendM15 != -1 && earlyCanTrade && ShowEarlySignals && ( (rates_total-1) - lastArrowBarEarlyS >= MinBarsBetweenArrows) )
    {
-      EarlySellBuffer[1] = price[1] + ArrowOffset * _Point;
+      DrawAnchoredArrow(EarlySellBuffer, price[1] + ArrowOffset * _Point, EarlySellColor);
       firedEarlySell = true;
       lastArrowBarEarlyS = rates_total-1;
    }
