@@ -130,6 +130,7 @@ input int    BackfillBarsM5   = 800;          // Глубина истории �
 input int    BackfillBarsM15  = 600;          // для M15
 input int    BackfillBarsH1   = 600;          // для H1
 input int    BackfillBatch    = 100;          // Пакет баров на один тик пересчёта (для отзывчивости)
+input double BackfillMinPoints = 10.0;        // Мин. дистанция по цене от последнего события (в пунктах)
 
 // --- Exit mode settings
 enum ExitMode { Exit_H1, Exit_EntryTF, Exit_Nearest, Exit_SoftHard };
@@ -417,7 +418,14 @@ bool IsValidTradingSessionAt(const datetime t)
 {
    if(!EnableSessionFilter) return true;
    MqlDateTime dt; TimeToStruct(t, dt);
-   int hourGMT = dt.hour - SessionGMTOffset; if(hourGMT<0) hourGMT+=24; if(hourGMT>=24) hourGMT-=24;
+    int offset = SessionGMTOffset;
+    if(UseDST)
+    {
+        // DST по Европе
+        int y=dt.year, m=dt.mon, d=dt.day;
+        if(IsDST_EU(y,m,d)) offset += 1;
+    }
+    int hourGMT = dt.hour - offset; if(hourGMT<0) hourGMT+=24; if(hourGMT>=24) hourGMT-=24;
    if(hourGMT>=8 && hourGMT<16)  return true; // London
    if(hourGMT>=13 && hourGMT<21) return true; // New York
    if(hourGMT>=0 && hourGMT<8)   return true; // Tokyo
@@ -882,13 +890,9 @@ bool ReadFilters(const int shift, int &emaDir, bool &rsiOK, double &rsiValOut)
    if(CopyBuffer(ema200H, 0, shM15, 2, ema200) != 2) return false;
    if(CopyBuffer(rsiH,    0, shM15, 1, rsi)    != 1) return false;
 
-   double dSlope = ema50[0] - ema50[1];
-   // Нормализуем наклон на ATR(M15); если EmaSlopeMin=0 — не фильтруем по наклону
-   double atrM15 = 0.0;
-   int atrH = iATR(_Symbol, PERIOD_M15, 14);
-   double aBuf[]; ArraySetAsSeries(aBuf, true);
-   if(atrH != INVALID_HANDLE && CopyBuffer(atrH, 0, shM15, 1, aBuf) == 1) atrM15 = aBuf[0];
-   double slopeThresh = (EmaSlopeMin > 0.0 ? (atrM15 > 0.0 ? EmaSlopeMin * atrM15 : EmaSlopeMin * _Point) : 0.0);
+    double dSlope = ema50[0] - ema50[1];
+    // Порог наклона задаётся в «пунктах цены» на бар
+    double slopeThresh = (EmaSlopeMin > 0.0 ? EmaSlopeMin * _Point : 0.0);
    bool slopeOK = (slopeThresh == 0.0) ? true : (MathAbs(dSlope) >= slopeThresh);
    if(slopeOK)
    {
@@ -918,11 +922,7 @@ bool ReadFiltersAt(const datetime tAnchor, int &emaDir, bool &rsiOK, double &rsi
     if(CopyBuffer(rsiH,    0, shM15, 1, rsi)    != 1) return false;
 
     double dSlope = ema50[0] - ema50[1];
-    double atrM15 = 0.0;
-    int atrH = iATR(_Symbol, PERIOD_M15, 14);
-    double aBuf[]; ArraySetAsSeries(aBuf, true);
-    if(atrH != INVALID_HANDLE && CopyBuffer(atrH, 0, shM15, 1, aBuf) == 1) atrM15 = aBuf[0];
-    double slopeThresh = (EmaSlopeMin > 0.0 ? (atrM15 > 0.0 ? EmaSlopeMin * atrM15 : EmaSlopeMin * _Point) : 0.0);
+    double slopeThresh = (EmaSlopeMin > 0.0 ? EmaSlopeMin * _Point : 0.0);
     bool slopeOK = (slopeThresh == 0.0) ? true : (MathAbs(dSlope) >= slopeThresh);
     if(slopeOK)
     {
@@ -1133,30 +1133,7 @@ bool IsValidTradingSession()
    TimeToStruct(serverTime, dt);
    int hourServer = dt.hour;
    int offset = SessionGMTOffset;
-   if(UseDST)
-   {
-      // Примитивная европ. логика DST: послед. воскресенье марта до послед. воскресенья октября — +1 час
-      int y = dt.year, m = dt.mon, d = dt.day, w = dt.day_of_week; // 0=Sun
-      // Найти последнее воскресенье месяца m
-      auto lastSunday = [&](int year, int month)->int{
-         // возьмём 31-е, откатимся до реального конца месяца, затем до воскресенья
-         MqlDateTime tmp; tmp.year=year; tmp.mon=month; tmp.day=28; tmp.hour=0; tmp.min=0; tmp.sec=0;
-         datetime t = StructToTime(tmp);
-         // прокрутим до начала след. месяца и шаг назад
-         int mdays = 3; // минимум 28, но безопасно шагами на 1 день вперёд
-         while(true){ MqlDateTime tt; TimeToStruct(t + mdays*86400, tt); if(tt.mon!=month) break; mdays++; }
-         datetime endm = t + (mdays-1)*86400;
-         MqlDateTime em; TimeToStruct(endm, em);
-         int dow = em.day_of_week; // 0=Sun
-         int delta = dow; // сколько дней откатить до воскресенья
-         return em.day - delta;
-      };
-      int lastSunMar = lastSunday(y, 3);
-      int lastSunOct = lastSunday(y,10);
-      // В DST если: (м>3 и м<10) или (март и день>=lastSunMar) или (октябрь и день<lastSunOct)
-      bool inDST = (m>3 && m<10) || (m==3 && d>=lastSunMar) || (m==10 && d<lastSunOct);
-      if(inDST) offset += 1;
-   }
+   if(UseDST){ if(IsDST_EU(dt.year, dt.mon, dt.day)) offset += 1; }
    int hourGMT = hourServer - offset;
    if(hourGMT < 0)  hourGMT += 24;
    if(hourGMT >= 24) hourGMT -= 24;
@@ -1173,6 +1150,32 @@ bool IsValidTradingSession()
    if(hour >= 0 && hour < 8) return true;
 
    return false;
+}
+
+// Возвращает день месяца для последнего воскресенья указанного месяца/года
+int LastSundayOfMonth(const int year, const int month)
+{
+    MqlDateTime dt; ZeroMemory(dt);
+    int nextYear = year, nextMon = month + 1;
+    if(nextMon > 12){ nextMon = 1; nextYear = year + 1; }
+    dt.year = nextYear; dt.mon = nextMon; dt.day = 1; dt.hour=0; dt.min=0; dt.sec=0;
+    datetime tNext = StructToTime(dt);
+    datetime tLast = tNext - 86400; // последний день текущего месяца
+    MqlDateTime dl; TimeToStruct(tLast, dl);
+    int dow = dl.day_of_week; // 0=Sun
+    int lastSun = dl.day - dow; // если воскресенье — тот же день
+    return lastSun;
+}
+
+// Простая европ. проверка DST: между послед. вс мар и послед. вс окт
+bool IsDST_EU(const int year, const int month, const int day)
+{
+    int lMar = LastSundayOfMonth(year, 3);
+    int lOct = LastSundayOfMonth(year,10);
+    if(month>3 && month<10) return true;
+    if(month==3 && day>=lMar) return true;
+    if(month==10 && day< lOct) return true;
+    return false;
 }
 
 //+------------------------------------------------------------------+
@@ -1351,18 +1354,26 @@ int OnInit()
    if(UseTF_H4) WarmupZZHandle(zzH4);
    if(UseTF_D1) WarmupZZHandle(zzD1);
 
-   // Инициализация фоновой дорисовки
+   // Инициализация фоновой дорисовки (Backfill)
    static bool backfillDisabled=false;
    bool backfillDonePersist = (GlobalVariableCheck(BackfillGVKey()) && GlobalVariableGet(BackfillGVKey())>0.5);
-   if(backfillDonePersist) backfillDisabled = true;
-   // Если история отключена, не выполняем дорисовку и удаляем статус-лейбл
-   if(!ShowHistorySignals) backfillDisabled = true;
-   // Исторические стрелки показываем только на графике H1
-   if((ENUM_TIMEFRAMES)Period() != PERIOD_H1) backfillDisabled = true;
-   if(BackfillOnAttach && !backfillDisabled)
-      DrawBackfillStatus(UseRussian?"Дорисовка истории: очередь" : "Backfill: queued");
+   backfillDisabled = false;
+   if(!ShowHistorySignals) backfillDisabled = true; // история выключена
+   // Исторические стрелки строим только на H1 (но статус можно показать всегда)
+   bool isH1chart = ((ENUM_TIMEFRAMES)Period() == PERIOD_H1);
+   if(ShowHistorySignals)
+   {
+      if(backfillDonePersist)
+         DrawBackfillStatus(UseRussian?"Дорисовка истории: завершено" : "Backfill: done");
+      else if(isH1chart)
+         DrawBackfillStatus(UseRussian?"Дорисовка истории: очередь" : "Backfill: queued");
+      else
+         DrawBackfillStatus(UseRussian?"Дорисовка истории: выполнится на H1" : "Backfill: run on H1");
+   }
    else
+   {
       ObjectDelete(0, "MFV_BACKFILL");
+   }
 
    // Попытка загрузить кэш пивотов из глобальных переменных терминала (устойчивость при смене ТФ)
    if(LoadAllPivotsGV())
@@ -1712,7 +1723,7 @@ int OnCalculate(const int rates_total,
    static bool backfillFinished = false;
    // Пропускаем backfill, если он уже был выполнен ранее (персистентная метка в GV)
    bool backfillDonePersistRT = (GlobalVariableCheck(BackfillGVKey()) && GlobalVariableGet(BackfillGVKey())>0.5);
-   if(BackfillOnAttach && !backfillFinished && ShowHistorySignals && !backfillDonePersistRT && (ENUM_TIMEFRAMES)Period()==PERIOD_H1)
+   if(!backfillFinished && ShowHistorySignals && !backfillDonePersistRT && (ENUM_TIMEFRAMES)Period()==PERIOD_H1)
    {
       PivotSeries ps5, ps15, psH1; ZeroMemory(ps5); ZeroMemory(ps15); ZeroMemory(psH1);
       int t5  = MathMax(0, MathMin(BackfillBarsM5,  iBars(_Symbol, PERIOD_M5)-2));
@@ -1754,9 +1765,20 @@ int OnCalculate(const int rates_total,
          int strength = CalculateTrendStrength(trH1, tr15, tr5, 0, 0);
          bool canTrade = sess && vol && strength >= MinTrendStrength;
          // Рисуем исторические сигналы с ограничением частоты по времени, чтобы не захламлять график
-         if(trH1==1 && tr15==1 && tr5==1 && canTrade && ShowNormalSignals)
+          if(trH1==1 && tr15==1 && tr5==1 && canTrade && ShowNormalSignals)
          {
-            if(bfLastBuy==0 || (tA - bfLastBuy) >= spacingSec)
+            // Доп. защита от «похожих» дублей: проверим дистанцию по цене
+            bool farEnough = true;
+            if(bfLastBuy!=0)
+            {
+               int shPrev = iBarShift(_Symbol, PERIOD_M5, bfLastBuy, false);
+               if(shPrev >= 1)
+               {
+                  double prevC = iClose(_Symbol, PERIOD_M5, shPrev);
+                  farEnough = (MathAbs(c5 - prevC) >= BackfillMinPoints * _Point);
+               }
+            }
+            if(bfLastBuy==0 || ((tA - bfLastBuy) >= spacingSec && farEnough))
             {
                DrawAnchoredArrowByTime(tA, BuyArrowBuffer, -ArrowOffset);
                bfLastBuy = tA;
@@ -1764,7 +1786,17 @@ int OnCalculate(const int rates_total,
          }
          if(trH1==-1 && tr15==-1 && tr5==-1 && canTrade && ShowNormalSignals)
          {
-            if(bfLastSell==0 || (tA - bfLastSell) >= spacingSec)
+            bool farEnoughS = true;
+            if(bfLastSell!=0)
+            {
+               int shPrevS = iBarShift(_Symbol, PERIOD_M5, bfLastSell, false);
+               if(shPrevS >= 1)
+               {
+                  double prevCS = iClose(_Symbol, PERIOD_M5, shPrevS);
+                  farEnoughS = (MathAbs(c5 - prevCS) >= BackfillMinPoints * _Point);
+               }
+            }
+            if(bfLastSell==0 || ((tA - bfLastSell) >= spacingSec && farEnoughS))
             {
                DrawAnchoredArrowByTime(tA, SellArrowBuffer, +ArrowOffset);
                bfLastSell = tA;
