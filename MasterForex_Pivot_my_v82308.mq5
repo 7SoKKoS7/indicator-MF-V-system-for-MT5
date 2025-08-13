@@ -28,8 +28,8 @@ input bool   EnableSessionFilter = true;      // Фильтр торговых �
 
 input group "=== Пивоты High/Low и ТФ ==="
 input bool   ShowPivotHighLow = true;         // Рисовать Pivot High/Low на всех ТФ
-input bool   UseTF_H4 = false;                // Использовать H4 dual-pivot
-input bool   UseTF_D1 = false;                // Использовать D1 dual-pivot
+input bool   UseTF_H4 = true;                 // Использовать H4 dual-pivot
+input bool   UseTF_D1 = true;                 // Использовать D1 dual-pivot
 
 input group "=== Сессии ==="
 input int    SessionGMTOffset = 2;            // Смещение серверного времени относительно GMT (пример: 2 для GMT+2)
@@ -452,9 +452,12 @@ int GetScanBarsForTF(const ENUM_TIMEFRAMES tf)
 
 bool EnsureTFHistory(const ENUM_TIMEFRAMES tf, const int minBars)
 {
+   // Универсальная обвязка: триггерим загрузку и проверяем синхронизацию серии
    MqlRates tmp[]; ArraySetAsSeries(tmp, true);
    int got = CopyRates(_Symbol, tf, 0, minBars, tmp);
-   return (got > 0);
+   bool synced = (SeriesInfoInteger(_Symbol, tf, SERIES_SYNCHRONIZED) != 0);
+   int have = (int)Bars(_Symbol, tf);
+   return (synced && (got > 0 || have >= MathMin(minBars, 100)));
 }
 
 // Читает ZigZag и обновляет подтверждённые High/Low для заданного ТФ.
@@ -566,7 +569,8 @@ void UpdatePivotsCache()
    bool ok1 = (pivH1.high>0.0 && pivH1.low>0.0);
    bool ok2 = (pivM15.high>0.0 && pivM15.low>0.0);
    bool ok3 = (pivM5.high>0.0 && pivM5.low>0.0);
-   pivotsEverReady = (ok1 && ok2 && ok3) || pivotsEverReady || (u1||u2||u3);
+   // Включаем троттлинг только когда готова базовая тройка (H1/M15/M5)
+   pivotsEverReady = (ok1 && ok2 && ok3);
    // Фиксируем метку времени только когда хотя бы что-то обновили или всё готово
    if(u1 || u2 || u3 || pivotsEverReady)
       pivotsLastUpdate = now;
@@ -965,8 +969,22 @@ int OnInit()
       Print(__FUNCTION__, ": ZigZag M5 INVALID_HANDLE");
       return(INIT_FAILED);
    }
-   if(UseTF_H4) zzH4 = iCustom(_Symbol, PERIOD_H4, "ZigZag", InpDepth, InpDeviation, 3);
-   if(UseTF_D1) zzD1 = iCustom(_Symbol, PERIOD_D1, "ZigZag", InpDepth, InpDeviation, 3);
+   if(UseTF_H4)
+   {
+      zzH4 = iCustom(_Symbol, PERIOD_H4, "ZigZag", InpDepth, InpDeviation, 3);
+      if(zzH4 == INVALID_HANDLE)
+         zzH4 = iCustom(_Symbol, PERIOD_H4, "ZigZag", InpDepth, InpDeviation, 3);
+      if(zzH4 == INVALID_HANDLE)
+         Print(__FUNCTION__, ": ZigZag H4 INVALID_HANDLE (optional)");
+   }
+   if(UseTF_D1)
+   {
+      zzD1 = iCustom(_Symbol, PERIOD_D1, "ZigZag", InpDepth, InpDeviation, 3);
+      if(zzD1 == INVALID_HANDLE)
+         zzD1 = iCustom(_Symbol, PERIOD_D1, "ZigZag", InpDepth, InpDeviation, 3);
+      if(zzD1 == INVALID_HANDLE)
+         Print(__FUNCTION__, ": ZigZag D1 INVALID_HANDLE (optional)");
+   }
    pivotsLastUpdate = 0;
 
     // Инициализация фильтров консенсуса
@@ -978,6 +996,10 @@ int OnInit()
    PrintFormat("INIT: H1=%d M15=%d M5=%d, ZZ(H1/M15/M5)=%d/%d/%d",
                Bars(_Symbol,PERIOD_H1), Bars(_Symbol,PERIOD_M15), Bars(_Symbol,PERIOD_M5),
                BarsCalculated(zzH1), BarsCalculated(zzM15), BarsCalculated(zzM5));
+   if(UseTF_H4 || UseTF_D1)
+      PrintFormat("INIT+: H4=%d D1=%d, ZZ(H4/D1)=%d/%d",
+                  Bars(_Symbol,PERIOD_H4), Bars(_Symbol,PERIOD_D1),
+                  (UseTF_H4?BarsCalculated(zzH4):-1), (UseTF_D1?BarsCalculated(zzD1):-1));
 
    return(INIT_SUCCEEDED);
 }
@@ -1156,19 +1178,25 @@ int OnCalculate(const int rates_total,
    ArraySetAsSeries(price, true);
     
     // «Тёплый старт»: динамически оцениваем необходимый минимум истории и готовность ZigZag
-    const int needM5  = MathMax(600,  InpDepth*20 + RetestWindowM5  + 200);
-    const int needM15 = MathMax(400,  InpDepth*10 + RetestWindowM15 + 200);
-    const int needH1  = MathMax(200,  H1ClosesNeeded*10 + 200);
+   const int needM5  = MathMax(600,  InpDepth*20 + RetestWindowM5  + 200);
+   const int needM15 = MathMax(400,  InpDepth*10 + RetestWindowM15 + 200);
+   const int needH1  = MathMax(200,  H1ClosesNeeded*10 + 200);
+   const int needH4  = MathMax(150,  InpDepth*6  + 120);
+   const int needD1  = MathMax(120,  InpDepth*4  + 90);
 
     bool ok5  = EnsureHistory(_Symbol, PERIOD_M5,  needM5);
     bool ok15 = EnsureHistory(_Symbol, PERIOD_M15, needM15);
     bool okH1 = EnsureHistory(_Symbol, PERIOD_H1,  needH1);
+    bool okH4 = (!UseTF_H4) ? true : EnsureHistory(_Symbol, PERIOD_H4, needH4);
+    bool okD1 = (!UseTF_D1) ? true : EnsureHistory(_Symbol, PERIOD_D1, needD1);
 
     bool zzReady5  = EnsureZigZagReady(zzM5);
     bool zzReady15 = EnsureZigZagReady(zzM15);
     bool zzReadyH1 = EnsureZigZagReady(zzH1);
+    bool zzReadyH4 = (!UseTF_H4) ? true : EnsureZigZagReady(zzH4);
+    bool zzReadyD1 = (!UseTF_D1) ? true : EnsureZigZagReady(zzD1);
 
-    if(!(ok5 && ok15 && okH1 && zzReady5 && zzReady15 && zzReadyH1))
+    if(!(ok5 && ok15 && okH1 && okH4 && okD1 && zzReady5 && zzReady15 && zzReadyH1 && zzReadyH4 && zzReadyD1))
     {
        DrawWarmupStatus(okH1, Bars(_Symbol,PERIOD_H1),  needH1,
                         ok15, Bars(_Symbol,PERIOD_M15), needM15,
@@ -1294,7 +1322,7 @@ int OnCalculate(const int rates_total,
    DrawRowLabel("MFV_STATUS_M5",    levelM5,     30);
    DrawRowLabel("MFV_STATUS_M15",   levelM15,    50);
    DrawRowLabel("MFV_STATUS_H1",    levelH1,     70);
-   if(UseTF_H4) DrawRowLabel("MFV_STATUS_H4",    levelH4,     90); else ObjectDelete(0, "MFV_STATUS_H4");
+   if(UseTF_H4) DrawRowLabel("MFV_STATUS_H4",    levelH4,     90);  else ObjectDelete(0, "MFV_STATUS_H4");
    if(UseTF_D1) DrawRowLabel("MFV_STATUS_D1",    levelD1,     110); else ObjectDelete(0, "MFV_STATUS_D1");
    DrawRowLabel("MFV_STATUS_STRENGTH", strengthText, 130);
    DrawRowLabel("MFV_STATUS_VOLUME", volumeText, 150);
