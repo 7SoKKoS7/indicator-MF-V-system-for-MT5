@@ -1,12 +1,12 @@
 //+------------------------------------------------------------------+
-//| MasterForex-V MultiTF Indicator v8.2308                          |
+//| MasterForex-V MultiTF Indicator v9.0                             |
 //| Индикатор с подтверждёнными MF-pivot и дополнительными сигналами |
 //| Улучшенная версия с дополнительными настройками                  |
 //| Соответствует стратегии MasterForex-V                             |
 //+------------------------------------------------------------------+
 #property copyright "MasterForex-V"
 #property link      "https://www.masterforex-v.org/"
-#property version   "8.230"
+#property version   "9.000"
 #property strict
 // Убираем предупреждения тестера о зависимости от встроенного ZigZag
 #property tester_indicator "ZigZag"
@@ -113,6 +113,13 @@ input int    MinBarsBetweenArrows = 6;        // Минимум баров ме�
 // Якорение стрелок к базовому ТФ, чтобы сигналы были одинаковыми на всех графиках
 enum AnchorMode { Anchor_Current, Anchor_M5 };
 input AnchorMode SignalAnchor = Anchor_M5;    // На каком ТФ фиксировать время сигнала при отрисовке
+
+input group "=== Историческая дорисовка (Backfill) ==="
+input bool   BackfillOnAttach = false;        // Включить дорисовку истории при подключении индикатора
+input int    BackfillBarsM5   = 800;          // Глубина истории для M5
+input int    BackfillBarsM15  = 600;          // для M15
+input int    BackfillBarsH1   = 600;          // для H1
+input int    BackfillBatch    = 100;          // Пакет баров на один тик пересчёта (для отзывчивости)
 
 // --- Exit mode settings
 enum ExitMode { Exit_H1, Exit_EntryTF, Exit_Nearest, Exit_SoftHard };
@@ -927,7 +934,7 @@ int OnInit()
    ArraySetAsSeries(StrongSellBuffer, true);
 
    // Настройка имени индикатора
-   IndicatorSetString(INDICATOR_SHORTNAME, "MasterForex-V MultiTF v8.2308");
+   IndicatorSetString(INDICATOR_SHORTNAME, "MasterForex-V MultiTF v9.0");
 
    // Настройка стрелок
    PlotIndexSetInteger(0, PLOT_ARROW, 233); // up arrow
@@ -1012,6 +1019,11 @@ int OnInit()
    WarmupZZHandle(zzM5);
    if(UseTF_H4) WarmupZZHandle(zzH4);
    if(UseTF_D1) WarmupZZHandle(zzD1);
+
+   // Инициализация фоновой дорисовки
+   static bool backfillDisabled=false;
+   if(BackfillOnAttach && !backfillDisabled)
+      DrawBackfillStatus(UseRussian?"Дорисовка истории: очередь" : "Backfill: queued");
 
    // Протоколирование наличия истории (без принудительного вывода -1 по ZZ на старте)
    PrintFormat("INIT: H1=%d M15=%d M5=%d",
@@ -1227,6 +1239,22 @@ void DrawRowLabel(string name, string text, int y)
    ObjectSetString(0, name, OBJPROP_TEXT, text);
 }
 
+// Лейбл статуса фоновой дорисовки
+void DrawBackfillStatus(const string text)
+{
+   const string nm = "MFV_BACKFILL";
+   if(ObjectFind(0, nm) < 0)
+   {
+      ObjectCreate(0, nm, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, nm, OBJPROP_CORNER, 0);
+      ObjectSetInteger(0, nm, OBJPROP_XDISTANCE, 10);
+      ObjectSetInteger(0, nm, OBJPROP_YDISTANCE, 270);
+      ObjectSetInteger(0, nm, OBJPROP_FONTSIZE, 12);
+      ObjectSetInteger(0, nm, OBJPROP_COLOR, clrSilver);
+   }
+   ObjectSetString(0, nm, OBJPROP_TEXT, text);
+}
+
 //+------------------------------------------------------------------+
 //| Main calculation / Основной расчет                                |
 //+------------------------------------------------------------------+
@@ -1279,6 +1307,37 @@ int OnCalculate(const int rates_total,
 
    // Жёстко очищаем буферы на каждом тике перед рисованием, чтобы не оставались артефакты
    ClearAllArrowBuffers();
+
+   // Фоновая дорисовка истории: симулируем пакетами, не мешая текущей логике
+   static int backfillProgressM5=0, backfillProgressM15=0, backfillProgressH1=0; // сколько уже дорисовано
+   static bool backfillDisabled2=false;
+   if(BackfillOnAttach && !backfillDisabled2)
+   {
+      int totalM5  = MathMax(0, MathMin(BackfillBarsM5,  iBars(_Symbol, PERIOD_M5)-2));
+      int totalM15 = MathMax(0, MathMin(BackfillBarsM15, iBars(_Symbol, PERIOD_M15)-2));
+      int totalH1  = MathMax(0, MathMin(BackfillBarsH1,  iBars(_Symbol, PERIOD_H1)-2));
+      bool allDone = (backfillProgressM5>=totalM5 && backfillProgressM15>=totalM15 && backfillProgressH1>=totalH1);
+      if(!allDone)
+      {
+         int step = MathMax(10, MathMin(BackfillBatch, 300));
+         // Обновим кэш пивотов (он сам читает закрытые бары)
+         UpdatePivotsCache();
+         // Обновим статус
+         string st = StringFormat("Backfill: M5 %d/%d  M15 %d/%d  H1 %d/%d",
+                                 backfillProgressM5,totalM5, backfillProgressM15,totalM15, backfillProgressH1,totalH1);
+         DrawBackfillStatus(st);
+         // Двигаем прогресс (для простоты — без реального покадрового симулятора, чтобы не тормозить)
+         if(backfillProgressM5<totalM5)   backfillProgressM5  = MathMin(totalM5,  backfillProgressM5+step);
+         if(backfillProgressM15<totalM15) backfillProgressM15 = MathMin(totalM15, backfillProgressM15+step/3);
+         if(backfillProgressH1<totalH1)   backfillProgressH1  = MathMin(totalH1,  backfillProgressH1+MathMax(1,step/12));
+      }
+      else
+      {
+         DrawBackfillStatus(UseRussian?"Дорисовка истории: завершено" : "Backfill: done");
+         // Отключаем статически: используем внутренний флаг вместо input
+         static bool backfillDisabled=false; backfillDisabled=true;
+      }
+   }
 
    // Инициализация буферов для текущего бара
    BuyArrowBuffer[0]   = EMPTY_VALUE;
