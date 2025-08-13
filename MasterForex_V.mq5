@@ -39,6 +39,9 @@ input int    InpDepth = 12;                   // Глубина ZigZag
 input double InpDeviation = 5.0;              // Отклонение в пунктах
 input double AtrDeviationK = 0.0;             // Коэф. ATR для адаптивного порога (0=выкл)
 
+input group "=== Толеранс тренда (ATR) ==="
+input double TrendTolAtrK = 0.10;             // Толеранс сравнения цены с pivot: k * ATR(H1)
+
 input group "=== Фильтры MasterForex-V ==="
 input double MinVolumeMultiplier = 1.2;       // Минимальный множитель объема
 input int    MinTrendStrength = 2;            // Минимальная сила тренда (1-3)
@@ -76,6 +79,9 @@ input int    ClinchLookbackH1  = 24;          // Сколько H1-баров а
 input int    ClinchFlipsMin    = 3;           // Минимум перебросов через pivotH1
 input double ClinchRangeMaxATR = 1.20;        // Макс. диапазон за Lookback в ATR(H1)
 input bool   ShowClinchZoneOnlyIfTouched = true; // Показывать зону только если цена входила в неё за Lookback
+// Режим зоны clinch: коридор H/L или ATR-зона вокруг середины
+enum ClinchZoneMode { Clinch_H1Band, Clinch_ATR_Midline };
+input ClinchZoneMode ClinchZone = Clinch_H1Band;
 
 input group "=== Цвета стрелок ==="
 input color  BuyArrowColor = clrLime;         // Цвет стрелки покупки
@@ -189,6 +195,12 @@ struct ClinchStatus
 };
 
 enum SigClass { SigNone, SigEarly, SigNormal, SigStrong };
+
+// --- Retest debug state for panel (cosmetic)
+static bool     dbgRetLastHas = false;
+static bool     dbgRetM15Ok   = false;
+static bool     dbgRetM15Vol  = false;
+static bool     dbgRetM5Ok    = false;
 
 // --- Dual-pivot per timeframe (High/Low) non-repainting cache
 struct TFPivots
@@ -391,7 +403,7 @@ int DetermineTrendFromSeries(const PivotSeries &ps, const int sh, const double c
    double pl = ps.low[sh];
    int sw = ps.swing[sh];
    if(ph<=0.0 || pl<=0.0) return 0;
-   double tol = (tol_param>0.0 ? tol_param : MathMax(2*_Point, (AtrDeviationK>0.0 ? 0.1*GetATR_H1() : 2*_Point)));
+   double tol = (tol_param>0.0 ? tol_param : MathMax(2*_Point, TrendTolAtrK>0.0 ? TrendTolAtrK*GetATR_H1() : 2*_Point));
    if(sw==+1 && close_t1 > (pl + tol))  return +1;
    if(sw==-1 && close_t1 < (ph - tol))  return -1;
    return 0;
@@ -832,7 +844,7 @@ void UpdatePivotsCache()
 int DetermineTrend(const TFPivots &p, const double close_t1, const double tol_param=0.0)
 {
    if(p.high<=0.0 || p.low<=0.0) return 0;
-   double tol = (tol_param>0.0 ? tol_param : MathMax(2*_Point, (AtrDeviationK>0.0 ? 0.1*GetATR_H1() : 2*_Point)));
+   double tol = (tol_param>0.0 ? tol_param : MathMax(2*_Point, TrendTolAtrK>0.0 ? TrendTolAtrK*GetATR_H1() : 2*_Point));
    if(p.lastSwing==+1 && close_t1 > (p.low + tol))  return +1;
    if(p.lastSwing== -1 && close_t1 < (p.high - tol)) return -1;
    return 0;
@@ -928,11 +940,14 @@ SigClass ApplyConsensus(SigClass sc, const int dir, const int emaDir, const bool
    if(Consensus == Cons_BlockAll) return SigNone;
    return sc;
 }
-// Clinch по коридору [PivotLow_H1..PivotHigh_H1]
+// Clinch по зоне: либо коридор [PivotLow_H1..PivotHigh_H1], либо ATR-зона вокруг midline
 ClinchStatus CalcClinchH1Band(const TFPivots &ph1, const int lookback, const int flipsMin,
                               const double rangeMaxATR)
 {
    ClinchStatus cs; ZeroMemory(cs);
+    // Guard: pivots must be ready; otherwise no clinch calculation
+    if(!(ph1.high>0.0 && ph1.low>0.0))
+        return cs;
    cs.isClinch=false;
    cs.touched=false;
 
@@ -987,9 +1002,20 @@ ClinchStatus CalcClinchH1Band(const TFPivots &ph1, const int lookback, const int
       cs.atr = sumTR / 14.0;
    }
 
-    // Коридор клинча — между последними подтверждёнными Low/High на H1
-    cs.zoneTop = ph1.high;
-    cs.zoneBot = ph1.low;
+    // Зона клинча
+    if(ClinchZone == Clinch_ATR_Midline && ph1.high>0.0 && ph1.low>0.0)
+    {
+        double mid = 0.5*(ph1.high + ph1.low);
+        double half = ClinchAtrK * cs.atr;
+        cs.zoneTop = mid + half;
+        cs.zoneBot = mid - half;
+    }
+    else
+    {
+        // Коридор H/L
+        cs.zoneTop = ph1.high;
+        cs.zoneBot = ph1.low;
+    }
    if(cs.zoneTop < cs.zoneBot){ double t=cs.zoneTop; cs.zoneTop=cs.zoneBot; cs.zoneBot=t; }
    for(int i=0;i<useBars;i++)
    {
@@ -1928,6 +1954,12 @@ int OnCalculate(const int rates_total,
             bool okBoth = okH1 && okRet;
             if(sc==SigStrong && !okBoth)        sc = SigNormal;
             else if(sc==SigNormal && !okH1)     sc = SigEarly;
+             // Save debug state for panel
+             dbgRetLastHas = true;
+             dbgRetM15Ok   = okRetM15;
+             // Volume condition is embedded; approximate via UseRetestVolume flag and okRetM15
+             dbgRetM15Vol  = (UseRetestVolume ? okRetM15 : false);
+             dbgRetM5Ok    = okRetM5;
          }
       }
 
@@ -2033,6 +2065,11 @@ int OnCalculate(const int rates_total,
             bool okBoth = okH1 && okRet;
             if(sc==SigStrong && !okBoth)        sc = SigNormal;
             else if(sc==SigNormal && !okH1)     sc = SigEarly;
+            // Save debug state for panel
+            dbgRetLastHas = true;
+            dbgRetM15Ok   = okRetM15b;
+            dbgRetM15Vol  = (UseRetestVolume ? okRetM15b : false);
+            dbgRetM5Ok    = okRetM5b;
          }
       }
 
@@ -2237,13 +2274,29 @@ int OnCalculate(const int rates_total,
    else if(firedReversal)  signalText = (UseRussian ? "Сигнал: Разворот" : "Signal: Reversal");
    DrawRowLabel("MFV_STATUS_SIGNAL", signalText, 190);
 
-   // Статус CLINCH (коридор H1 High/Low)
+   // Статус CLINCH (режим зоны)
    double rangeAtr = (clinchState.atr > 0.0 ? (clinchState.range / clinchState.atr) : 0.0);
    string clinchOn = clinchState.isClinch ? (UseRussian ? "✓" : "✓") : (UseRussian ? "✗" : "✗");
+   string bandText = (ClinchZone==Clinch_ATR_Midline)
+                     ? (UseRussian? StringFormat("zone=±%.2f ATR", ClinchAtrK)
+                                  : StringFormat("zone=±%.2f ATR", ClinchAtrK))
+                     : (UseRussian? "band=H/L" : "band=H/L");
    string clinchText = UseRussian ?
-       StringFormat("Схватка: %s, flips=%d, range=%.2f ATR, band=H/L", clinchOn, clinchState.flips, rangeAtr) :
-       StringFormat("Clinch: %s, flips=%d, range=%.2f ATR, band=H/L", clinchOn, clinchState.flips, rangeAtr);
+       StringFormat("Схватка: %s, flips=%d, range=%.2f ATR, %s", clinchOn, clinchState.flips, rangeAtr, bandText) :
+       StringFormat("Clinch: %s, flips=%d, range=%.2f ATR, %s", clinchOn, clinchState.flips, rangeAtr, bandText);
    DrawRowLabel("MFV_STATUS_CLINCH", clinchText, 210);
+
+   // Ретест отладка (косметика): выводим последнюю известную проверку ретеста
+   if(dbgRetLastHas)
+   {
+      string retM15 = (dbgRetM15Ok ? (UseRussian?"M15 ✓":"M15 ✓") : (UseRussian?"M15 ✗":"M15 ✗"));
+      string retVol = (UseRetestVolume ? (dbgRetM15Vol ? (UseRussian?"vol ✓":"vol ✓") : (UseRussian?"vol ✗":"vol ✗")) : (UseRussian?"vol –":"vol –"));
+      string retM5  = (dbgRetM5Ok ? (UseRussian?"M5 ✓":"M5 ✓") : (UseRussian?"M5 ✗":"M5 ✗"));
+      string retxt = UseRussian ?
+         StringFormat("Ретест: %s (%s), %s", retM15, retVol, retM5) :
+         StringFormat("Retest: %s (%s), %s", retM15, retVol, retM5);
+      DrawRowLabel("MFV_STATUS_RETEST", retxt, 270);
+   }
 
    // Фаза рынка (Flat/Trend) — строкой под Clinch
    string phaseText = UseRussian ?
