@@ -207,6 +207,159 @@ static bool pivotsEverReady = false; // станет true, когда H1/M15/M5 
 // ZigZag handles per TF
 int zzH1 = INVALID_HANDLE, zzM15 = INVALID_HANDLE, zzM5 = INVALID_HANDLE, zzH4 = INVALID_HANDLE, zzD1 = INVALID_HANDLE;
 
+//--- Persistent cache keys helpers (terminal Global Variables)
+string TfToKey(const ENUM_TIMEFRAMES tf)
+{
+   switch(tf)
+   {
+      case PERIOD_M5:  return "M5";
+      case PERIOD_M15: return "M15";
+      case PERIOD_H1:  return "H1";
+      case PERIOD_H4:  return "H4";
+      case PERIOD_D1:  return "D1";
+      default:         return "TF";
+   }
+}
+string MakeGVKey(const string sym, const ENUM_TIMEFRAMES tf, const string field)
+{
+   return StringFormat("MFV:%s:%s:%s", sym, TfToKey(tf), field);
+}
+void SavePivotsGV(const string sym, const ENUM_TIMEFRAMES tf, const TFPivots &p)
+{
+   GlobalVariableSet(MakeGVKey(sym, tf, "HIGH"),      p.high);
+   GlobalVariableSet(MakeGVKey(sym, tf, "LOW"),       p.low);
+   GlobalVariableSet(MakeGVKey(sym, tf, "HIGH_TIME"), (double)p.high_time);
+   GlobalVariableSet(MakeGVKey(sym, tf, "LOW_TIME"),  (double)p.low_time);
+   GlobalVariableSet(MakeGVKey(sym, tf, "SWING"),     (double)p.lastSwing);
+}
+bool LoadPivotsGV(const string sym, const ENUM_TIMEFRAMES tf, TFPivots &out)
+{
+   string kH=MakeGVKey(sym,tf,"HIGH"), kL=MakeGVKey(sym,tf,"LOW"), kHT=MakeGVKey(sym,tf,"HIGH_TIME"), kLT=MakeGVKey(sym,tf,"LOW_TIME"), kS=MakeGVKey(sym,tf,"SWING");
+   if(!GlobalVariableCheck(kH) || !GlobalVariableCheck(kL)) return false;
+   out.high = GlobalVariableGet(kH);
+   out.low  = GlobalVariableGet(kL);
+   if(GlobalVariableCheck(kHT)) out.high_time = (datetime)GlobalVariableGet(kHT);
+   if(GlobalVariableCheck(kLT)) out.low_time  = (datetime)GlobalVariableGet(kLT);
+   if(GlobalVariableCheck(kS))  out.lastSwing = (int)GlobalVariableGet(kS);
+   return (out.high>0.0 && out.low>0.0);
+}
+void SaveAllPivotsGV()
+{
+   SavePivotsGV(_Symbol, PERIOD_H1,  pivH1);
+   SavePivotsGV(_Symbol, PERIOD_M15, pivM15);
+   SavePivotsGV(_Symbol, PERIOD_M5,  pivM5);
+   if(UseTF_H4) SavePivotsGV(_Symbol, PERIOD_H4, pivH4);
+   if(UseTF_D1) SavePivotsGV(_Symbol, PERIOD_D1, pivD1);
+}
+bool LoadAllPivotsGV()
+{
+   bool ok1 = LoadPivotsGV(_Symbol, PERIOD_H1,  pivH1);
+   bool ok2 = LoadPivotsGV(_Symbol, PERIOD_M15, pivM15);
+   bool ok3 = LoadPivotsGV(_Symbol, PERIOD_M5,  pivM5);
+   if(UseTF_H4) LoadPivotsGV(_Symbol, PERIOD_H4, pivH4);
+   if(UseTF_D1) LoadPivotsGV(_Symbol, PERIOD_D1, pivD1);
+   if(ok1 && ok2 && ok3){ pivotsEverReady = true; pivotsLastUpdate = TimeCurrent(); }
+   return (ok1 && ok2 && ok3);
+}
+string BackfillGVKey(){ return StringFormat("MFV:%s:BACKFILL_DONE", _Symbol); }
+
+// --- Historical pivot series for backfill (per TF)
+struct PivotSeries
+{
+   double high[];
+   double low[];
+   int    swing[]; // +1 low, -1 high, 0 unknown
+   int    size;
+   bool   ready;
+};
+
+bool BuildPivotSeries(const ENUM_TIMEFRAMES tf, const int maxBars, PivotSeries &out)
+{
+   int h = GetZZHandle(tf);
+   if(h==INVALID_HANDLE) return false;
+   int bars = iBars(_Symbol, tf);
+   int closed = MathMax(0, bars-1);
+   int want = MathMin(closed, MathMax(10, maxBars));
+   if(want<=0) return false;
+
+   double bufH[], bufL[], bufM[]; ArraySetAsSeries(bufH,true); ArraySetAsSeries(bufL,true); ArraySetAsSeries(bufM,true);
+   int gotH = CopyBuffer(h, 1, 1, want, bufH);
+   int gotL = CopyBuffer(h, 2, 1, want, bufL);
+   int gotM = CopyBuffer(h, 0, 1, want, bufM);
+
+   ArrayResize(out.high,  want+5); ArrayResize(out.low, want+5); ArrayResize(out.swing, want+5);
+   ArraySetAsSeries(out.high, true); ArraySetAsSeries(out.low, true); ArraySetAsSeries(out.swing, true);
+
+   double lastH = 0.0, lastL = 0.0; int lastS = 0;
+   for(int sh=want; sh>=1; --sh)
+   {
+      bool isHigh=false, isLow=false;
+      double vH = (gotH>0 ? bufH[sh-1] : 0.0);
+      double vL = (gotL>0 ? bufL[sh-1] : 0.0);
+      if(vH!=0.0 && vH!=EMPTY_VALUE && MathIsValidNumber(vH)) { lastH=vH; lastS=-1; isHigh=true; }
+      if(vL!=0.0 && vL!=EMPTY_VALUE && MathIsValidNumber(vL)) { lastL=vL; if(!isHigh) lastS=+1; isLow=true; }
+      // Fallback: classify by comparing main buffer to OHLC
+      if(!isHigh && !isLow && gotM>0)
+      {
+         double vm = bufM[sh-1];
+         if(vm!=0.0 && vm!=EMPTY_VALUE && MathIsValidNumber(vm))
+         {
+            double hi = iHigh(_Symbol, tf, sh);
+            double lo = iLow(_Symbol,  tf, sh);
+            if(MathAbs(vm-hi) <= 2*_Point){ lastH=vm; lastS=-1; }
+            if(MathAbs(vm-lo) <= 2*_Point){ lastL=vm; lastS=+1; }
+         }
+      }
+      out.high[sh]  = lastH;
+      out.low[sh]   = lastL;
+      out.swing[sh] = lastS;
+   }
+   out.size = want+1;
+   out.ready = true;
+   return true;
+}
+
+int DetermineTrendFromSeries(const PivotSeries &ps, const int sh, const double close_t1, const double tol_param=0.0)
+{
+   if(!ps.ready || sh<1 || sh>=ps.size) return 0;
+   double ph = ps.high[sh];
+   double pl = ps.low[sh];
+   int sw = ps.swing[sh];
+   if(ph<=0.0 || pl<=0.0) return 0;
+   double tol = (tol_param>0.0 ? tol_param : MathMax(2*_Point, (AtrDeviationK>0.0 ? 0.1*GetATR_H1() : 2*_Point)));
+   if(sw==+1 && close_t1 > (pl + tol))  return +1;
+   if(sw==-1 && close_t1 < (ph - tol))  return -1;
+   return 0;
+}
+
+bool IsValidTradingSessionAt(const datetime t)
+{
+   if(!EnableSessionFilter) return true;
+   MqlDateTime dt; TimeToStruct(t, dt);
+   int hourGMT = dt.hour - SessionGMTOffset; if(hourGMT<0) hourGMT+=24; if(hourGMT>=24) hourGMT-=24;
+   if(hourGMT>=8 && hourGMT<16)  return true; // London
+   if(hourGMT>=13 && hourGMT<21) return true; // New York
+   if(hourGMT>=0 && hourGMT<8)   return true; // Tokyo
+   return false;
+}
+
+bool IsVolumeConfirmedOnTimeframeAt(const ENUM_TIMEFRAMES tf, const int sh)
+{
+   if(!EnableVolumeFilter) return true;
+   double cur = (double)iVolume(_Symbol, tf, sh);
+   double avg=0.0; int cnt=0;
+   for(int i=sh+1; i<=sh+20; ++i){ long v=iVolume(_Symbol, tf, i); if(v<=0) continue; avg+=(double)v; cnt++; }
+   if(cnt>0) avg/=cnt; else avg=0.0;
+   return (avg>0.0 ? cur > avg*MinVolumeMultiplier : true);
+}
+
+void DrawAnchoredArrowAt(const datetime tAnchor, double &buffer[], const double priceAtCurrentTF)
+{
+   int sh = iBarShift(_Symbol, (ENUM_TIMEFRAMES)Period(), tAnchor, false);
+   if(sh<1) sh=1;
+   buffer[sh] = priceAtCurrentTF;
+}
+
 int CopyCloseH1(const int bars, double &buf[])
 {
    ArraySetAsSeries(buf, true);
@@ -593,8 +746,10 @@ void UpdatePivotsCache()
    // Включаем троттлинг только когда готова базовая тройка (H1/M15/M5)
    pivotsEverReady = (ok1 && ok2 && ok3);
    // Фиксируем метку времени только когда хотя бы что-то обновили или всё готово
-   if(u1 || u2 || u3 || pivotsEverReady)
+   if(u1 || u2 || u3 || pivotsEverReady){
       pivotsLastUpdate = now;
+      SaveAllPivotsGV(); // сохранить кэш в глобальные переменные для быстрого восстановления при смене ТФ
+   }
 }
 
 // Тренд по dual‑pivot: Up если Close[1] > PivotLow и последний swing=Up; Down если Close[1] < PivotHigh и swing=Down.
@@ -1022,8 +1177,14 @@ int OnInit()
 
    // Инициализация фоновой дорисовки
    static bool backfillDisabled=false;
+   bool backfillDonePersist = (GlobalVariableCheck(BackfillGVKey()) && GlobalVariableGet(BackfillGVKey())>0.5);
+   if(backfillDonePersist) backfillDisabled = true;
    if(BackfillOnAttach && !backfillDisabled)
       DrawBackfillStatus(UseRussian?"Дорисовка истории: очередь" : "Backfill: queued");
+
+   // Попытка загрузить кэш пивотов из глобальных переменных терминала (устойчивость при смене ТФ)
+   if(LoadAllPivotsGV())
+      Print(UseRussian?"Кэш pivot загружен из GV" : "Pivot cache restored from GV");
 
    // Протоколирование наличия истории (без принудительного вывода -1 по ZZ на старте)
    PrintFormat("INIT: H1=%d M15=%d M5=%d",
@@ -1095,6 +1256,9 @@ void OnDeinit(const int reason)
    if(zzM5        != INVALID_HANDLE) { IndicatorRelease(zzM5);        zzM5        = INVALID_HANDLE; }
    if(zzH4        != INVALID_HANDLE) { IndicatorRelease(zzH4);        zzH4        = INVALID_HANDLE; }
    if(zzD1        != INVALID_HANDLE) { IndicatorRelease(zzD1);        zzD1        = INVALID_HANDLE; }
+
+   // Сохраняем актуальные pivots в глобальные переменные при выгрузке индикатора
+   SaveAllPivotsGV();
 }
 
 // (legacy single-pivot functions removed — using dual-pivot via ZigZag buffers)
@@ -1305,37 +1469,61 @@ int OnCalculate(const int rates_total,
    ArrayResize(StrongBuyBuffer,  rates_total);
    ArrayResize(StrongSellBuffer, rates_total);
 
-   // Жёстко очищаем буферы на каждом тике перед рисованием, чтобы не оставались артефакты
-   ClearAllArrowBuffers();
+   // Очищаем только текущий бар; история сохраняется
+   BuyArrowBuffer[0] = SellArrowBuffer[0] = EarlyBuyBuffer[0] = EarlySellBuffer[0] =
+      ExitBuffer[0] = ReverseBuffer[0] = StrongBuyBuffer[0] = StrongSellBuffer[0] = EarlyExitBuffer[0] = EMPTY_VALUE;
 
-   // Фоновая дорисовка истории: симулируем пакетами, не мешая текущей логике
-   static int backfillProgressM5=0, backfillProgressM15=0, backfillProgressH1=0; // сколько уже дорисовано
-   static bool backfillDisabled2=false;
-   if(BackfillOnAttach && !backfillDisabled2)
+   // Фоновая дорисовка истории: полноценно пересчитываем по закрытым барам с той же логикой
+   static int backfillDoneTF = 0; // битовая маска: 1=M5,2=M15,4=H1
+   if(BackfillOnAttach)
    {
-      int totalM5  = MathMax(0, MathMin(BackfillBarsM5,  iBars(_Symbol, PERIOD_M5)-2));
-      int totalM15 = MathMax(0, MathMin(BackfillBarsM15, iBars(_Symbol, PERIOD_M15)-2));
-      int totalH1  = MathMax(0, MathMin(BackfillBarsH1,  iBars(_Symbol, PERIOD_H1)-2));
-      bool allDone = (backfillProgressM5>=totalM5 && backfillProgressM15>=totalM15 && backfillProgressH1>=totalH1);
-      if(!allDone)
+      PivotSeries ps5, ps15, psH1; ZeroMemory(ps5); ZeroMemory(ps15); ZeroMemory(psH1);
+      int t5  = MathMax(0, MathMin(BackfillBarsM5,  iBars(_Symbol, PERIOD_M5)-2));
+      int t15 = MathMax(0, MathMin(BackfillBarsM15, iBars(_Symbol, PERIOD_M15)-2));
+      int tH1 = MathMax(0, MathMin(BackfillBarsH1,  iBars(_Symbol, PERIOD_H1)-2));
+
+      int step = MathMax(10, MathMin(BackfillBatch, 300));
+      static int prog5=0, prog15=0, progH1=0;
+
+      if(!(backfillDoneTF & 1)) { BuildPivotSeries(PERIOD_M5,  t5+50,  ps5); }
+      if(!(backfillDoneTF & 2)) { BuildPivotSeries(PERIOD_M15, t15+50, ps15); }
+      if(!(backfillDoneTF & 4)) { BuildPivotSeries(PERIOD_H1,  tH1+50, psH1); }
+
+      // Работаем по M5 как якорный — стрелки рисуем на текущем графике через время M5 бара
+      int todo5 = t5 - prog5; if(todo5>0) todo5 = MathMin(todo5, step);
+      for(int k=0;k<todo5;k++)
       {
-         int step = MathMax(10, MathMin(BackfillBatch, 300));
-         // Обновим кэш пивотов (он сам читает закрытые бары)
-         UpdatePivotsCache();
-         // Обновим статус
-         string st = StringFormat("Backfill: M5 %d/%d  M15 %d/%d  H1 %d/%d",
-                                 backfillProgressM5,totalM5, backfillProgressM15,totalM15, backfillProgressH1,totalH1);
-         DrawBackfillStatus(st);
-         // Двигаем прогресс (для простоты — без реального покадрового симулятора, чтобы не тормозить)
-         if(backfillProgressM5<totalM5)   backfillProgressM5  = MathMin(totalM5,  backfillProgressM5+step);
-         if(backfillProgressM15<totalM15) backfillProgressM15 = MathMin(totalM15, backfillProgressM15+step/3);
-         if(backfillProgressH1<totalH1)   backfillProgressH1  = MathMin(totalH1,  backfillProgressH1+MathMax(1,step/12));
+         int sh5 = 1 + prog5 + k; if(sh5>=ps5.size) break; datetime tA = iTime(_Symbol, PERIOD_M5, sh5);
+         // Тренды на момент бара
+         double c5 = iClose(_Symbol, PERIOD_M5, sh5);
+         int trH1  = DetermineTrendFromSeries(psH1,  iBarShift(_Symbol,PERIOD_H1, iTime(_Symbol,PERIOD_H1, sh5/12 + 1), false), iClose(_Symbol,PERIOD_H1,  sh5/12 + 1));
+         int tr15  = DetermineTrendFromSeries(ps15, (sh5/3)+1, iClose(_Symbol,PERIOD_M15,(sh5/3)+1));
+         int tr5   = DetermineTrendFromSeries(ps5,  sh5, c5);
+         bool sess = IsValidTradingSessionAt(tA);
+         bool vol  = (IsVolumeConfirmedOnTimeframeAt(PERIOD_M5, sh5) + IsVolumeConfirmedOnTimeframeAt(PERIOD_M15, (sh5/3)+1) + IsVolumeConfirmedOnTimeframeAt(PERIOD_H1, (sh5/12)+1)) >= 2;
+         int strength = CalculateTrendStrength(trH1, tr15, tr5, 0, 0);
+         bool canTrade = sess && vol && strength >= MinTrendStrength;
+         if(trH1==1 && tr15==1 && tr5==1 && canTrade && ShowNormalSignals)
+            DrawAnchoredArrowAt(tA, BuyArrowBuffer,  iClose(_Symbol,(ENUM_TIMEFRAMES)Period(), iBarShift(_Symbol,(ENUM_TIMEFRAMES)Period(), tA, false)) - ArrowOffset*_Point);
+         if(trH1==-1 && tr15==-1 && tr5==-1 && canTrade && ShowNormalSignals)
+            DrawAnchoredArrowAt(tA, SellArrowBuffer, iClose(_Symbol,(ENUM_TIMEFRAMES)Period(), iBarShift(_Symbol,(ENUM_TIMEFRAMES)Period(), tA, false)) + ArrowOffset*_Point);
       }
-      else
+      prog5 += todo5;
+
+      int todo15 = t15 - prog15; if(todo15>0) todo15 = MathMin(todo15, step/3);
+      if(todo15<=0) backfillDoneTF |= 2;
+
+      int todoH1 = tH1 - progH1; if(todoH1>0) todoH1 = MathMin(todoH1, MathMax(1,step/12));
+      if(todoH1<=0) backfillDoneTF |= 4;
+
+      string st = StringFormat("Backfill: M5 %d/%d  M15 %d/%d  H1 %d/%d", prog5, t5, prog15, t15, progH1, tH1);
+      DrawBackfillStatus(st);
+
+      if(prog5>=t5) backfillDoneTF |= 1;
+      if( (backfillDoneTF & 1) && (backfillDoneTF & 2) && (backfillDoneTF & 4) )
       {
          DrawBackfillStatus(UseRussian?"Дорисовка истории: завершено" : "Backfill: done");
-         // Отключаем статически: используем внутренний флаг вместо input
-         static bool backfillDisabled=false; backfillDisabled=true;
+         BackfillOnAttach = false; // завершили локально; input не меняем, просто прекращаем работу
       }
    }
 
@@ -1350,14 +1538,9 @@ int OnCalculate(const int rates_total,
    StrongSellBuffer[0] = EMPTY_VALUE;
    EarlyExitBuffer[0]  = EMPTY_VALUE;
 
-   // Ограничение глубины отрисовки стрелок, чтобы убрать «рандомные» хвосты на старой истории
-   if(!ShowHistorySignals)
+   // Ограничение глубины истории: мягко усечём дальние бары, если включена история
+   if(ShowHistorySignals)
    {
-      // Исторические стрелки отключены — рисуем только на баре [1], остальное очищено выше
-   }
-   else
-   {
-      // Лимит по истории — всё, что дальше SignalsLookbackBars, оставляем пустым
       int maxKeep = MathMax(50, MathMin(SignalsLookbackBars, rates_total-1));
       for(int i=maxKeep+1; i<rates_total; ++i)
       {
