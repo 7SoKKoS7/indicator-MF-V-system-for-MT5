@@ -622,12 +622,29 @@ double GetATR_H1()
 {
    double a[];
    ArraySetAsSeries(a, true);
-   if(atrH1Handle!=INVALID_HANDLE && CopyBuffer(atrH1Handle, 0, 1, 1, a) == 1 && a[0] > 0.0)
-   {
-      lastAtrH1 = a[0];
-      return a[0];
-   }
-   return lastAtrH1; // может быть 0 до первого успешного чтения
+    if(atrH1Handle!=INVALID_HANDLE && CopyBuffer(atrH1Handle, 0, 1, 1, a) == 1 && a[0] > 0.0)
+    {
+       lastAtrH1 = a[0];
+       return a[0];
+    }
+    // Fallback: если кэш пуст, оценим ATR как средний True Range за 14 баров
+    if(lastAtrH1 <= 0.0)
+    {
+       MqlRates r[]; ArraySetAsSeries(r, true);
+        int got = CopyRates(_Symbol, PERIOD_H1, 0, 16, r);
+        if(got >= 15)
+        {
+            double sumTR = 0.0;
+            for(int i=1; i<=14; i++)
+            {
+               double tr = MathMax(r[i].high - r[i].low,
+                                    MathMax(MathAbs(r[i].high - r[i+1].close), MathAbs(r[i].low - r[i+1].close)));
+               sumTR += tr;
+            }
+            lastAtrH1 = sumTR / 14.0;
+        }
+    }
+    return lastAtrH1; // может быть 0 до первого успешного чтения
 }
 
 //+------------------------------------------------------------------+
@@ -1820,18 +1837,18 @@ int OnCalculate(const int rates_total,
             (BreakoutConfirm==Confirm_All) ||
             (BreakoutConfirm==Confirm_StrongOnly      && sc==SigStrong) ||
             (BreakoutConfirm==Confirm_StrongAndNormal && (sc==SigStrong || sc==SigNormal));
-         if(needConfirm && !clinchState.isClinch)
+         if(needConfirm)
          {
              bool okH1  = CheckH1Breakout(pivH1.high, pivH1.low, dir);
-          datetime h1_open = iTime(_Symbol, PERIOD_H1, 1);
-          datetime fromTime = h1_open + PeriodSeconds(PERIOD_H1);
+             datetime h1_open = iTime(_Symbol, PERIOD_H1, 1);
+             datetime fromTime = h1_open + PeriodSeconds(PERIOD_H1);
              bool cOk=false,wOk=false,vOk=false, cOk5=false,wOk5=false,vOk5=false;
              bool okRetM15 = CheckRetestBounce_M15(pivH1.high, dir, fromTime, cOk,wOk,vOk);
              bool okRetM5  = (RetestAllowM5 ? CheckRetestBounce_M5(pivH1.high, dir, fromTime, cOk5,wOk5,vOk5) : false);
-            bool okRet = (okRetM15 || okRetM5);
-            bool okBoth = okH1 && okRet;
-            if(sc==SigStrong && !okBoth)        sc = SigNormal;
-            else if(sc==SigNormal && !okH1)     sc = SigEarly;
+             bool okRet = (okRetM15 || okRetM5);
+             bool okBoth = okH1 && okRet;
+             if(sc==SigStrong && !okBoth)        sc = SigNormal;
+             else if(sc==SigNormal && !okH1)     sc = SigEarly;
              // Save debug state for panel
              dbgRetLastHas = true;
              dbgRetM15Ok   = (cOk && wOk);
@@ -1941,15 +1958,15 @@ int OnCalculate(const int rates_total,
             (BreakoutConfirm==Confirm_All) ||
             (BreakoutConfirm==Confirm_StrongOnly      && sc==SigStrong) ||
             (BreakoutConfirm==Confirm_StrongAndNormal && (sc==SigStrong || sc==SigNormal));
-         if(needConfirm && !clinchState.isClinch)
+         if(needConfirm)
          {
             bool okH1  = CheckH1Breakout(pivH1.high, pivH1.low, dir);
-          datetime h1_open2 = iTime(_Symbol, PERIOD_H1, 1);
-          datetime fromTime2 = h1_open2 + PeriodSeconds(PERIOD_H1);
-           bool cOkb=false,wOkb=false,vOkb=false, cOk5b=false,wOk5b=false,vOk5b=false;
-           bool okRetM15b = CheckRetestBounce_M15(pivH1.low, dir, fromTime2, cOkb,wOkb,vOkb);
-           bool okRetM5b  = (RetestAllowM5 ? CheckRetestBounce_M5(pivH1.low, dir, fromTime2, cOk5b,wOk5b,vOk5b) : false);
-          bool okRet = (okRetM15b || okRetM5b);
+            datetime h1_open2 = iTime(_Symbol, PERIOD_H1, 1);
+            datetime fromTime2 = h1_open2 + PeriodSeconds(PERIOD_H1);
+            bool cOkb=false,wOkb=false,vOkb=false, cOk5b=false,wOk5b=false,vOk5b=false;
+            bool okRetM15b = CheckRetestBounce_M15(pivH1.low, dir, fromTime2, cOkb,wOkb,vOkb);
+            bool okRetM5b  = (RetestAllowM5 ? CheckRetestBounce_M5(pivH1.low, dir, fromTime2, cOk5b,wOk5b,vOk5b) : false);
+            bool okRet = (okRetM15b || okRetM5b);
             bool okBoth = okH1 && okRet;
             if(sc==SigStrong && !okBoth)        sc = SigNormal;
             else if(sc==SigNormal && !okH1)     sc = SigEarly;
@@ -2205,7 +2222,9 @@ int OnCalculate(const int rates_total,
    if(dbgRetLastHas)
    {
       string retM15 = (dbgRetM15Ok ? (UseRussian?"M15 ✓":"M15 ✓") : (UseRussian?"M15 ✗":"M15 ✗"));
-      string retVol = (UseRetestVolume ? (dbgRetM15Vol ? (UseRussian?"vol ✓":"vol ✓") : (UseRussian?"vol ✗":"vol ✗")) : (UseRussian?"vol –":"vol –"));
+      string retVol;
+      if(!UseRetestVolume) retVol = (UseRussian?"vol –":"vol –");
+      else                 retVol = (dbgRetM15Vol ? (UseRussian?"vol ✓":"vol ✓") : (UseRussian?"vol ✗":"vol ✗"));
       string retM5  = (dbgRetM5Ok ? (UseRussian?"M5 ✓":"M5 ✓") : (UseRussian?"M5 ✗":"M5 ✗"));
       string retxt = UseRussian ?
          StringFormat("Ретест: %s (%s), %s", retM15, retVol, retM5) :
