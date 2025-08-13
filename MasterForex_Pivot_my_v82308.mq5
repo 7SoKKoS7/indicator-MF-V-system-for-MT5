@@ -8,6 +8,8 @@
 #property link      "https://www.masterforex-v.org/"
 #property version   "8.230"
 #property strict
+// Убираем предупреждения тестера о зависимости от встроенного ZigZag
+#property tester_indicator "ZigZag"
 
 #property indicator_chart_window
 #property indicator_buffers 9
@@ -189,6 +191,24 @@ int CopyCloseH1(const int bars, double &buf[])
    ArraySetAsSeries(buf, true);
    int got = CopyClose(_Symbol, PERIOD_H1, 0, bars, buf);
    return got;
+}
+
+// Универсальная подкачка истории: триггер загрузки, проверка синхронизации, оценка факта наличия
+bool EnsureHistory(const string sym, ENUM_TIMEFRAMES tf, int needBars)
+{
+   MqlRates rates[]; ArraySetAsSeries(rates, true);
+   int got = CopyRates(sym, tf, 0, needBars, rates);
+   bool synced = (SeriesInfoInteger(sym, tf, SERIES_SYNCHRONIZED) != 0);
+   int have = (int)Bars(sym, tf);
+   return (got > 0 || have >= MathMin(needBars, 100)) && synced;
+}
+
+// Проверка готовности буфера встроенного ZigZag
+bool EnsureZigZagReady(int handle)
+{
+   if(handle == INVALID_HANDLE) return false;
+   int bc = BarsCalculated(handle);
+   return (bc > 0);
 }
 
 // Вычисляет A-B-C на M15 в направлении dir (+1/-1)
@@ -452,23 +472,67 @@ bool CalculatePivots(const ENUM_TIMEFRAMES tf, TFPivots &io)
    if(cnt < InpDepth + 5) return false;
 
    double bufHigh[], bufLow[]; ArraySetAsSeries(bufHigh, true); ArraySetAsSeries(bufLow, true);
-   // Стандартный ZigZag: буфер 1 — High, буфер 2 — Low
-   if(CopyBuffer(h, 1, 0, cnt, bufHigh) <= 0) return false;
-   if(CopyBuffer(h, 2, 0, cnt, bufLow)  <= 0) return false;
+   // Читаем только ЗАКРЫТЫЕ бары: старт с индекса 1 и ограничение по 3000 элементов
+   int closed = MathMax(0, bars - 1);
+   int want   = MathMin(closed, MathMin(3000, cnt));
+   if(want <= 0) return false;
+   // Стандартный ZigZag: буфер 1 — High, буфер 2 — Low (на некоторых билдах один из них может быть пуст)
+   int gotH = CopyBuffer(h, 1, 1, want, bufHigh);
+   int gotL = CopyBuffer(h, 2, 1, want, bufLow);
 
    double lastHigh=0.0, lastLow=0.0; int shHigh=-1, shLow=-1;
-   for(int i=1; i<cnt; ++i) { double v=bufHigh[i]; if(v!=0.0 && v!=EMPTY_VALUE){ lastHigh=v; shHigh=i; break; } }
-   for(int i=1; i<cnt; ++i) { double v=bufLow[i];  if(v!=0.0 && v!=EMPTY_VALUE){ lastLow =v; shLow =i; break; } }
+   int startShift = 1; // мы читали буферы с позиции 1 (закрытый бар)
+   if(gotH>0)
+      for(int i=0; i<want; ++i)
+      {
+         double v=bufHigh[i];
+         if(v!=0.0 && v!=EMPTY_VALUE && MathIsValidNumber(v))
+         {
+            lastHigh=v; shHigh=startShift + i; break;
+         }
+      }
+   if(gotL>0)
+      for(int i=0; i<want; ++i)
+      {
+         double v=bufLow[i];
+         if(v!=0.0 && v!=EMPTY_VALUE && MathIsValidNumber(v))
+         {
+            lastLow=v; shLow=startShift + i; break;
+         }
+      }
+
+   // Fallback: если map-буферы пусты, читаем основной буфер ZigZag и классифицируем H/L по бару
+   if((shHigh<0 || shLow<0))
+   {
+      double bufMain[]; ArraySetAsSeries(bufMain, true);
+      int gotM = CopyBuffer(h, 0, 1, want, bufMain);
+      if(gotM>0)
+      {
+         for(int i=0; i<want && (shHigh<0 || shLow<0); ++i)
+         {
+            int sh = startShift + i;
+            double v = bufMain[i];
+            if(v==0.0 || v==EMPTY_VALUE || !MathIsValidNumber(v)) continue;
+            double hi = iHigh(_Symbol, tf, sh);
+            double lo = iLow(_Symbol,  tf, sh);
+            if(shHigh<0 && MathAbs(v-hi) <= 2*_Point){ lastHigh=v; shHigh=sh; }
+            if(shLow <0 && MathAbs(v-lo) <= 2*_Point){ lastLow =v; shLow =sh; }
+         }
+      }
+   }
 
    bool updated=false;
-   // ATR-адаптация: требуем минимальную длину качели
+   // ATR-адаптация: требуем минимальную длину качели (если ATR недоступен — не блокируем обновление)
    if(AtrDeviationK > 0.0 && lastHigh>0.0 && lastLow>0.0)
    {
       int atrH = iATR(_Symbol, tf, 14);
       double aBuf[]; ArraySetAsSeries(aBuf, true);
       double atrTf = 0.0; if(atrH!=INVALID_HANDLE && CopyBuffer(atrH,0,1,1,aBuf)==1) atrTf=aBuf[0];
-      double thr = MathMax(InpDeviation*_Point, AtrDeviationK*atrTf);
-      if(MathAbs(lastHigh-lastLow) < thr) { /* не обновляем */ }
+      if(atrTf>0.0)
+      {
+         double thr = MathMax(InpDeviation*_Point, AtrDeviationK*atrTf);
+         if(MathAbs(lastHigh-lastLow) < thr) { /* слишком коротко — оставляем как есть */ }
+      }
    }
 
    if(lastHigh>0.0 && shHigh>=1)
@@ -874,10 +938,33 @@ int OnInit()
       return(INIT_FAILED);
    PlotIndexSetInteger(8, PLOT_LINE_COLOR, EarlyExitColor);
 
-   // Инициализация ZigZag per TF (built-in)
+   // Инициализация ZigZag per TF (built-in) с проверкой хэндлов
    zzH1  = iCustom(_Symbol, PERIOD_H1,  "ZigZag", InpDepth, InpDeviation, 3);
+   if(zzH1 == INVALID_HANDLE)
+      zzH1 = iCustom(_Symbol, PERIOD_H1,  "ZigZag", InpDepth, InpDeviation, 3);
+   if(zzH1 == INVALID_HANDLE)
+   {
+      Print(__FUNCTION__, ": ZigZag H1 INVALID_HANDLE");
+      return(INIT_FAILED);
+   }
+
    zzM15 = iCustom(_Symbol, PERIOD_M15, "ZigZag", InpDepth, InpDeviation, 3);
+   if(zzM15 == INVALID_HANDLE)
+      zzM15 = iCustom(_Symbol, PERIOD_M15, "ZigZag", InpDepth, InpDeviation, 3);
+   if(zzM15 == INVALID_HANDLE)
+   {
+      Print(__FUNCTION__, ": ZigZag M15 INVALID_HANDLE");
+      return(INIT_FAILED);
+   }
+
    zzM5  = iCustom(_Symbol, PERIOD_M5,  "ZigZag", InpDepth, InpDeviation, 3);
+   if(zzM5 == INVALID_HANDLE)
+      zzM5  = iCustom(_Symbol, PERIOD_M5,  "ZigZag", InpDepth, InpDeviation, 3);
+   if(zzM5 == INVALID_HANDLE)
+   {
+      Print(__FUNCTION__, ": ZigZag M5 INVALID_HANDLE");
+      return(INIT_FAILED);
+   }
    if(UseTF_H4) zzH4 = iCustom(_Symbol, PERIOD_H4, "ZigZag", InpDepth, InpDeviation, 3);
    if(UseTF_D1) zzD1 = iCustom(_Symbol, PERIOD_D1, "ZigZag", InpDepth, InpDeviation, 3);
    pivotsLastUpdate = 0;
@@ -886,6 +973,11 @@ int OnInit()
     ema50H  = iMA(_Symbol, PERIOD_M15, EmaFast, 0, MODE_EMA, PRICE_CLOSE);
     ema200H = iMA(_Symbol, PERIOD_M15, EmaSlow, 0, MODE_EMA, PRICE_CLOSE);
     rsiH    = iRSI(_Symbol, PERIOD_M15, RsiPeriod, PRICE_CLOSE);
+
+   // Протоколирование наличия истории и готовности ZigZag (один раз при старте)
+   PrintFormat("INIT: H1=%d M15=%d M5=%d, ZZ(H1/M15/M5)=%d/%d/%d",
+               Bars(_Symbol,PERIOD_H1), Bars(_Symbol,PERIOD_M15), Bars(_Symbol,PERIOD_M5),
+               BarsCalculated(zzH1), BarsCalculated(zzM15), BarsCalculated(zzM5));
 
    return(INIT_SUCCEEDED);
 }
@@ -915,6 +1007,7 @@ void OnDeinit(const int reason)
       ObjectDelete(0, objR2);
       ObjectDelete(0, objS1);
       ObjectDelete(0, objS2);
+    ObjectDelete(0, "MFV_WARMUP");
    }
 
    // Удаление линий и зон, созданных индикатором (dual‑pivot)
@@ -1000,6 +1093,34 @@ void DrawOrUpdateLine(string name, double price, color clr, int width=1, ENUM_LI
    }
 }
 
+// Отрисовка статуса «разогрева» истории/буферов
+void DrawWarmupStatus(const bool okH1, const int haveH1, const int needH1,
+                      const bool okM15, const int haveM15, const int needM15,
+                      const bool okM5, const int haveM5, const int needM5)
+{
+   const string nm = "MFV_WARMUP";
+   if(okH1 && okM15 && okM5)
+   {
+      ObjectDelete(0, nm);
+      return;
+   }
+
+   string txt = StringFormat("Warm-up | H1 %d/%d  M15 %d/%d  M5 %d/%d",
+                             haveH1, needH1, haveM15, needM15, haveM5, needM5);
+
+   if(ObjectFind(0, nm) < 0)
+   {
+      ObjectCreate(0, nm, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, nm, OBJPROP_CORNER, 0);
+      ObjectSetInteger(0, nm, OBJPROP_XDISTANCE, 10);
+      ObjectSetInteger(0, nm, OBJPROP_YDISTANCE, 8);
+      ObjectSetInteger(0, nm, OBJPROP_FONTSIZE, 12);
+      ObjectSetInteger(0, nm, OBJPROP_BACK, false);
+      ObjectSetInteger(0, nm, OBJPROP_COLOR, clrSilver);
+   }
+   ObjectSetString(0, nm, OBJPROP_TEXT, txt);
+}
+
 //+------------------------------------------------------------------+
 //| Draw single status row / Отрисовка строки статуса                |
 //+------------------------------------------------------------------+
@@ -1033,6 +1154,27 @@ int OnCalculate(const int rates_total,
    if(rates_total < 2) return(0);
    
    ArraySetAsSeries(price, true);
+    
+    // «Тёплый старт»: динамически оцениваем необходимый минимум истории и готовность ZigZag
+    const int needM5  = MathMax(600,  InpDepth*20 + RetestWindowM5  + 200);
+    const int needM15 = MathMax(400,  InpDepth*10 + RetestWindowM15 + 200);
+    const int needH1  = MathMax(200,  H1ClosesNeeded*10 + 200);
+
+    bool ok5  = EnsureHistory(_Symbol, PERIOD_M5,  needM5);
+    bool ok15 = EnsureHistory(_Symbol, PERIOD_M15, needM15);
+    bool okH1 = EnsureHistory(_Symbol, PERIOD_H1,  needH1);
+
+    bool zz5  = EnsureZigZagReady(zzM5);
+    bool zz15 = EnsureZigZagReady(zzM15);
+    bool zzH1 = EnsureZigZagReady(zzH1);
+
+    if(!(ok5 && ok15 && okH1 && zz5 && zz15 && zzH1))
+    {
+       DrawWarmupStatus(okH1, Bars(_Symbol,PERIOD_H1),  needH1,
+                        ok15, Bars(_Symbol,PERIOD_M15), needM15,
+                        ok5,  Bars(_Symbol,PERIOD_M5),  needM5);
+       // Не блокируем расчёты полностью: ниже применим «грациозную деградацию».
+    }
    
    // Изменение размера буферов
    ArrayResize(BuyArrowBuffer,   rates_total);
@@ -1073,23 +1215,8 @@ int OnCalculate(const int rates_total,
    // Обновление dual‑pivot значений
    UpdatePivotsCache();
    
-   // Используем значения dual‑pivot напрямую из кэша
-
-   // Проверка доступности pivot значений
-   if(pivH1.high==0.0 || pivH1.low==0.0 || pivM15.high==0.0 || pivM15.low==0.0 || pivM5.high==0.0 || pivM5.low==0.0)
-   {
-      if(ShowStatusInfo)
-      {
-         string waitTxt = UseRussian ? "Ожидание данных..." : "Waiting for data...";
-         string hint = UseRussian ? " (H1~400, M15~800, M5~2000 баров)" : " (H1~400, M15~800, M5~2000 bars)";
-         DrawRowLabel("MFV_STATUS_TREND", waitTxt + hint, 10);
-      }
-      // Ускоряем первичную инициализацию: запросим целевые объёмы истории явно
-      EnsureTFHistory(PERIOD_H1,  GetScanBarsForTF(PERIOD_H1));
-      EnsureTFHistory(PERIOD_M15, GetScanBarsForTF(PERIOD_M15));
-      EnsureTFHistory(PERIOD_M5,  GetScanBarsForTF(PERIOD_M5));
-      return(rates_total);
-   }
+   // Грациозная деградация: если какой‑то TF ещё не готов, не блокируем весь расчёт —
+   // просто пропустим соответствующие проверки/условия далее.
 
    // Определение трендов
    double cH1  = iClose(_Symbol, PERIOD_H1, 1);
