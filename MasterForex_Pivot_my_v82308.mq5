@@ -1164,11 +1164,11 @@ int OnCalculate(const int rates_total,
     bool ok15 = EnsureHistory(_Symbol, PERIOD_M15, needM15);
     bool okH1 = EnsureHistory(_Symbol, PERIOD_H1,  needH1);
 
-    bool zz5  = EnsureZigZagReady(zzM5);
-    bool zz15 = EnsureZigZagReady(zzM15);
-    bool zzH1 = EnsureZigZagReady(zzH1);
+    bool zzReady5  = EnsureZigZagReady(zzM5);
+    bool zzReady15 = EnsureZigZagReady(zzM15);
+    bool zzReadyH1 = EnsureZigZagReady(zzH1);
 
-    if(!(ok5 && ok15 && okH1 && zz5 && zz15 && zzH1))
+    if(!(ok5 && ok15 && okH1 && zzReady5 && zzReady15 && zzReadyH1))
     {
        DrawWarmupStatus(okH1, Bars(_Symbol,PERIOD_H1),  needH1,
                         ok15, Bars(_Symbol,PERIOD_M15), needM15,
@@ -1252,11 +1252,21 @@ int OnCalculate(const int rates_total,
                                 : "Trend H1: %s  M15: %s  M5: %s";
    string trendStatus = StringFormat(trendFmt, strH1, strM15, strM5);
 
-   string levelM5  = StringFormat("Pivot M5: H=%s | L=%s",  DoubleToString(pivM5.high,  _Digits), DoubleToString(pivM5.low,  _Digits));
-   string levelM15 = StringFormat("Pivot M15: H=%s | L=%s", DoubleToString(pivM15.high, _Digits), DoubleToString(pivM15.low, _Digits));
-   string levelH1  = StringFormat("Pivot H1: H=%s | L=%s",  DoubleToString(pivH1.high,  _Digits), DoubleToString(pivH1.low,  _Digits));
-   string levelH4  = UseTF_H4 ? StringFormat("Pivot H4: H=%s | L=%s",  DoubleToString(pivH4.high,  _Digits), DoubleToString(pivH4.low,  _Digits)) : "";
-   string levelD1  = UseTF_D1 ? StringFormat("Pivot D1: H=%s | L=%s",  DoubleToString(pivD1.high,  _Digits), DoubleToString(pivD1.low,  _Digits)) : "";
+   string levelM5  = (pivM5.high>0.0 && pivM5.low>0.0)
+      ? StringFormat("Pivot M5: H=%s | L=%s",  DoubleToString(pivM5.high,  _Digits), DoubleToString(pivM5.low,  _Digits))
+      : StringFormat("Pivot M5: H=%s | L=%s",  "–", "–");
+   string levelM15 = (pivM15.high>0.0 && pivM15.low>0.0)
+      ? StringFormat("Pivot M15: H=%s | L=%s", DoubleToString(pivM15.high, _Digits), DoubleToString(pivM15.low, _Digits))
+      : StringFormat("Pivot M15: H=%s | L=%s",  "–", "–");
+   string levelH1  = (pivH1.high>0.0 && pivH1.low>0.0)
+      ? StringFormat("Pivot H1: H=%s | L=%s",  DoubleToString(pivH1.high,  _Digits), DoubleToString(pivH1.low,  _Digits))
+      : StringFormat("Pivot H1: H=%s | L=%s",  "–", "–");
+   string levelH4  = (UseTF_H4 ? ((pivH4.high>0.0 && pivH4.low>0.0)
+      ? StringFormat("Pivot H4: H=%s | L=%s",  DoubleToString(pivH4.high,  _Digits), DoubleToString(pivH4.low,  _Digits))
+      : StringFormat("Pivot H4: H=%s | L=%s",  "–", "–")) : "");
+   string levelD1  = (UseTF_D1 ? ((pivD1.high>0.0 && pivD1.low>0.0)
+      ? StringFormat("Pivot D1: H=%s | L=%s",  DoubleToString(pivD1.high,  _Digits), DoubleToString(pivD1.low,  _Digits))
+      : StringFormat("Pivot D1: H=%s | L=%s",  "–", "–")) : "");
 
    // Дополнительная информация MasterForex-V
    string strengthText = UseRussian ? 
@@ -1284,8 +1294,8 @@ int OnCalculate(const int rates_total,
    DrawRowLabel("MFV_STATUS_M5",    levelM5,     30);
    DrawRowLabel("MFV_STATUS_M15",   levelM15,    50);
    DrawRowLabel("MFV_STATUS_H1",    levelH1,     70);
-   DrawRowLabel("MFV_STATUS_H4",    levelH4,     90);
-   DrawRowLabel("MFV_STATUS_D1",    levelD1,     110);
+   if(UseTF_H4) DrawRowLabel("MFV_STATUS_H4",    levelH4,     90); else ObjectDelete(0, "MFV_STATUS_H4");
+   if(UseTF_D1) DrawRowLabel("MFV_STATUS_D1",    levelD1,     110); else ObjectDelete(0, "MFV_STATUS_D1");
    DrawRowLabel("MFV_STATUS_STRENGTH", strengthText, 130);
    DrawRowLabel("MFV_STATUS_VOLUME", volumeText, 150);
    DrawRowLabel("MFV_STATUS_SESSION", sessionText, 170);
@@ -1655,6 +1665,16 @@ int OnCalculate(const int rates_total,
       if(pivM15.low>0.0)  DrawOrUpdateLine("PivotM15_L", pivM15.low,  PivotLowColor,  1, STYLE_DASHDOTDOT);
       if(pivM5.high>0.0)  DrawOrUpdateLine("PivotM5_H",  pivM5.high,  PivotHighColor, 1, STYLE_DASHDOTDOT);
       if(pivM5.low>0.0)   DrawOrUpdateLine("PivotM5_L",  pivM5.low,   PivotLowColor,  1, STYLE_DASHDOTDOT);
+      if(UseTF_H4)
+      {
+         if(pivH4.high>0.0) DrawOrUpdateLine("PivotH4_H", pivH4.high, PivotHighColor, 1, STYLE_DASHDOTDOT);
+         if(pivH4.low>0.0)  DrawOrUpdateLine("PivotH4_L", pivH4.low,  PivotLowColor,  1, STYLE_DASHDOTDOT);
+      }
+      if(UseTF_D1)
+      {
+         if(pivD1.high>0.0) DrawOrUpdateLine("PivotD1_H", pivD1.high, PivotHighColor, 1, STYLE_DASHDOTDOT);
+         if(pivD1.low>0.0)  DrawOrUpdateLine("PivotD1_L", pivD1.low,  PivotLowColor,  1, STYLE_DASHDOTDOT);
+      }
    }
 
    // Отрисовка классических уровней Pivot (Daily) — как отдельная подсистема
