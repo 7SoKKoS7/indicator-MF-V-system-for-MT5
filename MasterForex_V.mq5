@@ -1475,7 +1475,8 @@ int OnCalculate(const int rates_total,
 
    // Фоновая дорисовка истории: полноценно пересчитываем по закрытым барам с той же логикой
    static int backfillDoneTF = 0; // битовая маска: 1=M5,2=M15,4=H1
-   if(BackfillOnAttach)
+   static bool backfillFinished = false;
+   if(BackfillOnAttach && !backfillFinished)
    {
       PivotSeries ps5, ps15, psH1; ZeroMemory(ps5); ZeroMemory(ps15); ZeroMemory(psH1);
       int t5  = MathMax(0, MathMin(BackfillBarsM5,  iBars(_Symbol, PERIOD_M5)-2));
@@ -1520,10 +1521,10 @@ int OnCalculate(const int rates_total,
       DrawBackfillStatus(st);
 
       if(prog5>=t5) backfillDoneTF |= 1;
-      if( (backfillDoneTF & 1) && (backfillDoneTF & 2) && (backfillDoneTF & 4) )
+      if( ((backfillDoneTF & 1)!=0) && ((backfillDoneTF & 2)!=0) && ((backfillDoneTF & 4)!=0) )
       {
          DrawBackfillStatus(UseRussian?"Дорисовка истории: завершено" : "Backfill: done");
-         BackfillOnAttach = false; // завершили локально; input не меняем, просто прекращаем работу
+         backfillFinished = true; // завершаем локально, не трогаем input
       }
    }
 
