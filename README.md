@@ -53,11 +53,24 @@ input bool   EnableVolumeFilter = true;       // Фильтр по объему
 input bool   EnableSessionFilter = true;      // Фильтр торговых сессий
 ```
 
+### Пивоты High/Low и ТФ:
+```mql5
+input bool   ShowPivotHighLow = true;         // Рисовать Pivot High/Low на всех ТФ
+input bool   UseTF_H4 = false;                // Использовать H4 dual‑pivot
+input bool   UseTF_D1 = false;                // Использовать D1 dual‑pivot
+```
+
 ### Настройки ZigZag:
 ```mql5
 input int    InpDepth = 12;                   // Глубина ZigZag
 input double InpDeviation = 5.0;              // Отклонение в пунктах
 input double AtrDeviationK = 0.0;             // Коэф. ATR для адаптивного порога (0=выкл)
+```
+
+### Цвета Pivot High/Low:
+```mql5
+input color  PivotHighColor = clrRed;         // Цвет Pivot High (сопротивление)
+input color  PivotLowColor  = clrLime;        // Цвет Pivot Low  (поддержка)
 ```
 
 ### Dual‑pivot MF‑pivots (High/Low)
@@ -139,14 +152,16 @@ input double RetestTolATR_M5      = 0.35;  // допуск касания для
 
 Индикатор отображает детальную информацию:
 
-- **Тренд H1: ↑ M15: ↑ M5: ↑** - направление трендов на ключевых таймфреймах
-- **Пивот M5: 1.07053** - уровни pivot на разных таймфреймах
+ - **Тренд H1: ↑ M15: ↑ M5: ↑** - направления трендов
+ - **Pivot H1: H=1.23456 | L=1.22345**
+ - **Pivot M15: H=... | L=...**
+ - **Pivot M5: H=... | L=...**
 - **Сила тренда: 3/3** - оценка силы тренда (1-3 балла)
 - **Объем M5:✓ M15:✓ H1:✓ (3/3)** - подтверждение объема на 3 таймфреймах
 - **Сессия: ✓** - валидность торговой сессии
 
 Дополнительно (если включено в настройках):
-- **Clinch:** `✓/✗, flips=X, range=Y ATR, zone=±K ATR` — статус «схватки» вокруг `pivotH1` (расчёт по закрытым барам H1).
+ - **Clinch:** `✓/✗, flips=X, range=Y ATR, band=H/L` — статус «схватки» в коридоре `PivotLow_H1..PivotHigh_H1` (по закрытым барам H1).
 - **Фаза:** `Trend/Flat` — детектор рыночной фазы по качелям на M15; во флете сигналы даунгрейдятся до Early.
 - **Consensus:** `2/3 ✓ | EMA:↑|↓|– | RSI: ✓|✗` — голосование MF‑ядро/EMA/RSI. Режим управляется `Consensus` (PanelOnly/Gate*/BlockAll).
 - **Сигнал:** `Strong BUY/Strong SELL/BUY/SELL/Early BUY/Early SELL/Early EXIT/HARD EXIT/Reversal` — текущий статус сигнала.
