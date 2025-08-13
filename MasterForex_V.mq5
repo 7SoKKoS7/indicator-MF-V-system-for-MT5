@@ -124,13 +124,7 @@ input int    MinBarsBetweenArrows = 6;        // Минимум баров ме�
 enum AnchorMode { Anchor_Current, Anchor_M5 };
 input AnchorMode SignalAnchor = Anchor_M5;    // На каком ТФ фиксировать время сигнала при отрисовке
 
-input group "=== Историческая дорисовка (Backfill) ==="
-input bool   BackfillOnAttach = false;        // Включить дорисовку истории при подключении индикатора
-input int    BackfillBarsM5   = 800;          // Глубина истории для M5
-input int    BackfillBarsM15  = 600;          // для M15
-input int    BackfillBarsH1   = 600;          // для H1
-input int    BackfillBatch    = 100;          // Пакет баров на один тик пересчёта (для отзывчивости)
-input double BackfillMinPoints = 10.0;        // Мин. дистанция по цене от последнего события (в пунктах)
+// Историческая дорисовка удалена по требованию — индикатор работает только в реальном времени
 
 // --- Exit mode settings
 enum ExitMode { Exit_H1, Exit_EntryTF, Exit_Nearest, Exit_SoftHard };
@@ -278,72 +272,8 @@ bool LoadAllPivotsGV()
    if(ok1 && ok2 && ok3){ pivotsEverReady = true; pivotsLastUpdate = TimeCurrent(); }
    return (ok1 && ok2 && ok3);
 }
-string BackfillGVKey(){ return StringFormat("MFV:%s:BACKFILL_DONE", _Symbol); }
 
-// --- Persistent storage for rendered signals (to restore without heavy backfill)
-const int ARW_CAP = 300; // максимальное число событий для восстановления
-string ArrowGVKey(const string field){ return StringFormat("MFV:%s:ARW:%s", _Symbol, field); }
-string ArrowGVItemKey(const int idx, const string field){ return StringFormat("MFV:%s:ARW:%s:%d", _Symbol, field, idx); }
-double GVGet0(const string k){ return GlobalVariableCheck(k) ? GlobalVariableGet(k) : 0.0; }
-void PersistArrowEvent(const datetime t, const int kind)
-{
-    if(t<=0 || kind==0) return;
-    // Проверка на дубли: пробежимся по последним N и сравним
-    int total = (int)GVGet0(ArrowGVKey("TOTAL"));
-    int next  = (int)GVGet0(ArrowGVKey("NEXT"));
-    if(total>ARW_CAP) total = ARW_CAP;
-    int start = (next - total + ARW_CAP) % ARW_CAP;
-    for(int i=0;i<total;i++)
-    {
-        int idx = (start + i) % ARW_CAP;
-        datetime ti = (datetime)GVGet0(ArrowGVItemKey(idx, "T"));
-        int ki = (int)GVGet0(ArrowGVItemKey(idx, "K"));
-        if(ti==t && ki==kind) return; // уже есть
-    }
-
-    // Запись в позицию next
-    GlobalVariableSet(ArrowGVItemKey(next, "T"), (double)t);
-    GlobalVariableSet(ArrowGVItemKey(next, "K"), (double)kind);
-    next = (next + 1) % ARW_CAP;
-    if(total < ARW_CAP) total++;
-    GlobalVariableSet(ArrowGVKey("NEXT"),  (double)next);
-    GlobalVariableSet(ArrowGVKey("TOTAL"), (double)total);
-}
-void RestoreArrowsFromGVOnce()
-{
-    static bool restored=false; if(restored) return;
-    if(!ShowHistorySignals) return;
-    // Историю стрелок восстанавливаем только на графике H1, чтобы не засорять остальные ТФ
-    if((ENUM_TIMEFRAMES)Period() != PERIOD_H1) { restored=true; return; }
-    int total = (int)GVGet0(ArrowGVKey("TOTAL"));
-    int next  = (int)GVGet0(ArrowGVKey("NEXT"));
-    if(total<=0) { restored=true; return; }
-    if(total>ARW_CAP) total=ARW_CAP;
-    int start = (next - total + ARW_CAP) % ARW_CAP;
-    for(int i=0;i<total;i++)
-    {
-        int idx = (start + i) % ARW_CAP;
-        datetime t = (datetime)GVGet0(ArrowGVItemKey(idx, "T"));
-        int kind   = (int)GVGet0(ArrowGVItemKey(idx, "K"));
-        if(t<=0 || kind==0) continue;
-        int sh = iBarShift(_Symbol, (ENUM_TIMEFRAMES)Period(), t, false);
-        if(sh < 1) continue;
-        double p = iClose(_Symbol, (ENUM_TIMEFRAMES)Period(), sh);
-        switch(kind)
-        {
-            case 1: DrawAnchoredArrowByTime(t, StrongBuyBuffer,  -ArrowOffset); break;
-            case 2: DrawAnchoredArrowByTime(t, StrongSellBuffer, +ArrowOffset); break;
-            case 3: DrawAnchoredArrowByTime(t, BuyArrowBuffer,   -ArrowOffset); break;
-            case 4: DrawAnchoredArrowByTime(t, SellArrowBuffer,  +ArrowOffset); break;
-            case 5: DrawAnchoredArrowByTime(t, EarlyBuyBuffer,   -ArrowOffset); break;
-            case 6: DrawAnchoredArrowByTime(t, EarlySellBuffer,  +ArrowOffset); break;
-            case 7: DrawAnchoredArrowByTime(t, ExitBuffer,        0); break;
-            case 8: DrawAnchoredArrowByTime(t, EarlyExitBuffer,   0); break;
-            case 9: DrawAnchoredArrowByTime(t, ReverseBuffer,     0); break;
-        }
-    }
-    restored=true;
-}
+// Историческое восстановление стрелок и их персистентность отключены — индикатор рисует только реальные события
 
 // --- Historical pivot series for backfill (per TF)
 struct PivotSeries
@@ -847,8 +777,9 @@ void UpdatePivotsCache()
    bool u1 = CalculatePivots(PERIOD_H1,  pivH1);
    bool u2 = CalculatePivots(PERIOD_M15, pivM15);
    bool u3 = CalculatePivots(PERIOD_M5,  pivM5);
-   if(UseTF_H4) CalculatePivots(PERIOD_H4, pivH4);
-   if(UseTF_D1) CalculatePivots(PERIOD_D1, pivD1);
+   bool u4 = false, u5 = false;
+   if(UseTF_H4) u4 = CalculatePivots(PERIOD_H4, pivH4);
+   if(UseTF_D1) u5 = CalculatePivots(PERIOD_D1, pivD1);
 
    bool ok1 = (pivH1.high>0.0 && pivH1.low>0.0);
    bool ok2 = (pivM15.high>0.0 && pivM15.low>0.0);
@@ -856,10 +787,11 @@ void UpdatePivotsCache()
    // Включаем троттлинг только когда готова базовая тройка (H1/M15/M5)
    pivotsEverReady = (ok1 && ok2 && ok3);
    // Фиксируем метку времени только когда хотя бы что-то обновили или всё готово
-   if(u1 || u2 || u3 || pivotsEverReady){
+   if(u1 || u2 || u3 || u4 || u5 || pivotsEverReady)
       pivotsLastUpdate = now;
-      SaveAllPivotsGV(); // сохранить кэш в глобальные переменные для быстрого восстановления при смене ТФ
-   }
+   // Сохраняем в GV только при реальном обновлении, чтобы снизить I/O шум
+   if(u1 || u2 || u3 || u4 || u5)
+      SaveAllPivotsGV();
 }
 
 // Тренд по dual‑pivot: Up если Close[1] > PivotLow и последний swing=Up; Down если Close[1] < PivotHigh и swing=Down.
@@ -1354,40 +1286,23 @@ int OnInit()
    if(UseTF_H4) WarmupZZHandle(zzH4);
    if(UseTF_D1) WarmupZZHandle(zzD1);
 
-   // Инициализация фоновой дорисовки (Backfill)
-   static bool backfillDisabled=false;
-   bool backfillDonePersist = (GlobalVariableCheck(BackfillGVKey()) && GlobalVariableGet(BackfillGVKey())>0.5);
-   backfillDisabled = false;
-   if(!ShowHistorySignals) backfillDisabled = true; // история выключена
-   // Исторические стрелки строим только на H1 (но статус можно показать всегда)
-   bool isH1chart = ((ENUM_TIMEFRAMES)Period() == PERIOD_H1);
-   if(ShowHistorySignals)
-   {
-      if(backfillDonePersist)
-         DrawBackfillStatus(UseRussian?"Дорисовка истории: завершено" : "Backfill: done");
-      else if(isH1chart)
-         DrawBackfillStatus(UseRussian?"Дорисовка истории: очередь" : "Backfill: queued");
-      else
-         DrawBackfillStatus(UseRussian?"Дорисовка истории: выполнится на H1" : "Backfill: run on H1");
-   }
-   else
-   {
-      ObjectDelete(0, "MFV_BACKFILL");
-   }
+   // Backfill UI полностью отключён — убедимся, что старый лейбл удалён
+   ObjectDelete(0, "MFV_BACKFILL");
 
    // Попытка загрузить кэш пивотов из глобальных переменных терминала (устойчивость при смене ТФ)
    if(LoadAllPivotsGV())
       Print(UseRussian?"Кэш pivot загружен из GV" : "Pivot cache restored from GV");
 
-    // Восстановление последних стрелок из GV, чтобы не запускать тяжёлый backfill при каждом переключении
-    RestoreArrowsFromGVOnce();
+    // Историческое восстановление стрелок отключено
 
    // Протоколирование наличия истории (без принудительного вывода -1 по ZZ на старте)
+   #ifdef DEBUG
    PrintFormat("INIT: H1=%d M15=%d M5=%d",
                Bars(_Symbol,PERIOD_H1), Bars(_Symbol,PERIOD_M15), Bars(_Symbol,PERIOD_M5));
    if(UseTF_H4 || UseTF_D1)
       PrintFormat("INIT+: H4=%d D1=%d",
                   Bars(_Symbol,PERIOD_H4), Bars(_Symbol,PERIOD_D1));
+   #endif
 
    return(INIT_SUCCEEDED);
 }
@@ -1499,7 +1414,8 @@ void DrawOrUpdateLine(string name, double price, color clr, int width=1, ENUM_LI
 }
 
 // Отрисовка стрелки, привязанной к времени базового ТФ (для единых сигналов на всех графиках)
-void DrawAnchoredArrow(double &buffer[], const double priceAtCurrentTF, const color col)
+// Цвет задаётся цветом соответствующего плота; параметр цвета удалён, чтобы не вводить в заблуждение
+void DrawAnchoredArrow(double &buffer[], const double priceAtCurrentTF)
 {
    // Стрелки пишутся в буфер по индексу [shift]; определим shift через якорный ТФ (обычно M5)
    int shiftCurrent = 1; // рисуем на закрытом баре текущего ТФ
@@ -1569,6 +1485,7 @@ void WarmupZZHandle(const int h)
 // (removed unused ClearAllArrowBuffers)
 
 // Обрезает историю сигналов: оставляет только последние keepTotal события (по всем буферам сразу)
+// Важно: считает по количеству баров-событий, а не по календарному времени
 void PruneAllSignalsToLastN(const int rates_total, const int keepTotal)
 {
     // Ничего не делаем, если история не задана или недостаточно баров
@@ -1646,21 +1563,7 @@ void DrawRowLabel(string name, string text, int y)
    ObjectSetString(0, name, OBJPROP_TEXT, text);
 }
 
-// Лейбл статуса фоновой дорисовки
-void DrawBackfillStatus(const string text)
-{
-   const string nm = "MFV_BACKFILL";
-   if(ObjectFind(0, nm) < 0)
-   {
-      ObjectCreate(0, nm, OBJ_LABEL, 0, 0, 0);
-      ObjectSetInteger(0, nm, OBJPROP_CORNER, 0);
-      ObjectSetInteger(0, nm, OBJPROP_XDISTANCE, 10);
-      ObjectSetInteger(0, nm, OBJPROP_YDISTANCE, 270);
-      ObjectSetInteger(0, nm, OBJPROP_FONTSIZE, 12);
-      ObjectSetInteger(0, nm, OBJPROP_COLOR, clrSilver);
-   }
-   ObjectSetString(0, nm, OBJPROP_TEXT, text);
-}
+// (removed) DrawBackfillStatus — backfill UI полностью удалён
 
 //+------------------------------------------------------------------+
 //| Main calculation / Основной расчет                                |
@@ -1718,113 +1621,8 @@ int OnCalculate(const int rates_total,
    BuyArrowBuffer[0] = SellArrowBuffer[0] = EarlyBuyBuffer[0] = EarlySellBuffer[0] =
       ExitBuffer[0] = ReverseBuffer[0] = StrongBuyBuffer[0] = StrongSellBuffer[0] = EarlyExitBuffer[0] = EMPTY_VALUE;
 
-   // Фоновая дорисовка истории: полноценно пересчитываем по закрытым барам с той же логикой
-   static int backfillDoneTF = 0; // битовая маска: 1=M5,2=M15,4=H1
-   static bool backfillFinished = false;
-   // Пропускаем backfill, если он уже был выполнен ранее (персистентная метка в GV)
-   bool backfillDonePersistRT = (GlobalVariableCheck(BackfillGVKey()) && GlobalVariableGet(BackfillGVKey())>0.5);
-   if(!backfillFinished && ShowHistorySignals && !backfillDonePersistRT && (ENUM_TIMEFRAMES)Period()==PERIOD_H1)
-   {
-      PivotSeries ps5, ps15, psH1; ZeroMemory(ps5); ZeroMemory(ps15); ZeroMemory(psH1);
-      int t5  = MathMax(0, MathMin(BackfillBarsM5,  iBars(_Symbol, PERIOD_M5)-2));
-      int t15 = MathMax(0, MathMin(BackfillBarsM15, iBars(_Symbol, PERIOD_M15)-2));
-      int tH1 = MathMax(0, MathMin(BackfillBarsH1,  iBars(_Symbol, PERIOD_H1)-2));
-
-      int step = MathMax(10, MathMin(BackfillBatch, 300));
-      static int prog5=0, prog15=0, progH1=0;
-      // Для предотвращения «хаотичных» исторических стрелок — ограничим частоту по времени
-      static datetime bfLastBuy=0, bfLastSell=0;
-      static datetime bfLastEarlyBuy=0, bfLastEarlySell=0;
-      // Исторические сигналы реже 1 раза в 15 минут
-      int spacingSec = 15 * 60;
-
-      if(!(backfillDoneTF & 1)) { BuildPivotSeries(PERIOD_M5,  t5+50,  ps5); }
-      if(!(backfillDoneTF & 2)) { if(BuildPivotSeries(PERIOD_M15, t15+50, ps15)) { prog15 = t15; backfillDoneTF |= 2; } }
-      if(!(backfillDoneTF & 4)) { if(BuildPivotSeries(PERIOD_H1,  tH1+50, psH1))  { progH1 = tH1; backfillDoneTF |= 4; } }
-
-      // Работаем по M5 как якорный — стрелки рисуем на текущем графике через время M5 бара
-      int todo5 = t5 - prog5; if(todo5>0) todo5 = MathMin(todo5, step);
-      // Обрабатываем от старых к новым, чтобы избежать накопления «частых» стрелок
-      for(int k=todo5-1;k>=0;k--)
-      {
-         int sh5 = 1 + prog5 + k; if(sh5>=ps5.size) break; datetime tA = iTime(_Symbol, PERIOD_M5, sh5);
-         // Тренды на момент бара (строго по закрытым барам каждого ТФ)
-         int sh15 = ClosedShiftAtTime(PERIOD_M15, tA);
-         int shH1 = ClosedShiftAtTime(PERIOD_H1,  tA);
-         if(sh15<1 || shH1<1) continue; // нужна история
-
-         double c5  = iClose(_Symbol, PERIOD_M5,  sh5);
-         double c15 = iClose(_Symbol, PERIOD_M15, sh15);
-         double cH1 = iClose(_Symbol, PERIOD_H1,  shH1);
-
-         int tr5   = DetermineTrendFromSeries(ps5,  sh5,  c5);
-         int tr15  = DetermineTrendFromSeries(ps15, sh15, c15);
-         int trH1  = DetermineTrendFromSeries(psH1, shH1, cH1);
-         bool sess = IsValidTradingSessionAt(tA);
-         bool vol  = (IsVolumeConfirmedOnTimeframeAt(PERIOD_M5, sh5) + IsVolumeConfirmedOnTimeframeAt(PERIOD_M15, sh15) + IsVolumeConfirmedOnTimeframeAt(PERIOD_H1, shH1)) >= 2;
-         int strength = CalculateTrendStrength(trH1, tr15, tr5, 0, 0);
-         bool canTrade = sess && vol && strength >= MinTrendStrength;
-         // Рисуем исторические сигналы с ограничением частоты по времени, чтобы не захламлять график
-          if(trH1==1 && tr15==1 && tr5==1 && canTrade && ShowNormalSignals)
-         {
-            // Доп. защита от «похожих» дублей: проверим дистанцию по цене
-            bool farEnough = true;
-            if(bfLastBuy!=0)
-            {
-               int shPrev = iBarShift(_Symbol, PERIOD_M5, bfLastBuy, false);
-               if(shPrev >= 1)
-               {
-                  double prevC = iClose(_Symbol, PERIOD_M5, shPrev);
-                  farEnough = (MathAbs(c5 - prevC) >= BackfillMinPoints * _Point);
-               }
-            }
-            if(bfLastBuy==0 || ((tA - bfLastBuy) >= spacingSec && farEnough))
-            {
-               DrawAnchoredArrowByTime(tA, BuyArrowBuffer, -ArrowOffset);
-               bfLastBuy = tA;
-            }
-         }
-         if(trH1==-1 && tr15==-1 && tr5==-1 && canTrade && ShowNormalSignals)
-         {
-            bool farEnoughS = true;
-            if(bfLastSell!=0)
-            {
-               int shPrevS = iBarShift(_Symbol, PERIOD_M5, bfLastSell, false);
-               if(shPrevS >= 1)
-               {
-                  double prevCS = iClose(_Symbol, PERIOD_M5, shPrevS);
-                  farEnoughS = (MathAbs(c5 - prevCS) >= BackfillMinPoints * _Point);
-               }
-            }
-            if(bfLastSell==0 || ((tA - bfLastSell) >= spacingSec && farEnoughS))
-            {
-               DrawAnchoredArrowByTime(tA, SellArrowBuffer, +ArrowOffset);
-               bfLastSell = tA;
-            }
-         }
-      }
-      prog5 += todo5;
-
-      // Серии M15/H1 построены одним вызовом выше, прогресс считаем завершённым
-      int todo15 = t15 - prog15; if(todo15<=0) backfillDoneTF |= 2;
-      int todoH1 = tH1 - progH1; if(todoH1<=0) backfillDoneTF |= 4;
-
-       if(ShowHistorySignals)
-       {
-          string st = StringFormat("Backfill: M5 %d/%d  M15 %d/%d  H1 %d/%d", prog5, t5, prog15, t15, progH1, tH1);
-          DrawBackfillStatus(st);
-       }
-
-      if(prog5>=t5) backfillDoneTF |= 1;
-      if( ((backfillDoneTF & 1)!=0) && ((backfillDoneTF & 2)!=0) && ((backfillDoneTF & 4)!=0) )
-      {
-          if(ShowHistorySignals)
-             DrawBackfillStatus(UseRussian?"Дорисовка истории: завершено" : "Backfill: done");
-         backfillFinished = true; // завершаем локально, не трогаем input
-          // Ставим персистентную метку: на следующих подключениях backfill не выполнять
-          GlobalVariableSet(BackfillGVKey(), 1.0);
-      }
-   }
+   // Полностью убираем любые backfill-индикаторы/сообщения
+   ObjectDelete(0, "MFV_BACKFILL");
 
    // Инициализация буферов для текущего бара
    BuyArrowBuffer[0]   = EMPTY_VALUE;
@@ -1869,9 +1667,12 @@ int OnCalculate(const int rates_total,
    static int    lastTrendM15 = 0;
    static int    lastTrendM5  = 0;
    // Пивоты, зафиксированные на баре входа (для разных режимов выхода)
-   static double lastPivotH1AtEntry  = 0.0;
-   static double lastPivotM15AtEntry = 0.0;
-   static double lastPivotM5AtEntry  = 0.0;
+   static double   lastPivotH1AtEntry  = 0.0;
+   static double   lastPivotM15AtEntry = 0.0;
+   static double   lastPivotM5AtEntry  = 0.0;
+   static datetime lastPivotH1TimeAtEntry = 0;
+   static datetime lastPivotM15TimeAtEntry= 0;
+   static datetime lastPivotM5TimeAtEntry = 0;
    static double lastExitPivot       = 0.0; // выбранный уровень выхода для режимов Exit_H1/EntryTF/Nearest
    static bool   earlyExitShown      = false; // чтобы ранний выход рисовался один раз на позицию
    static int    lastArrowBarBuy     = -10000;
@@ -2060,32 +1861,32 @@ int OnCalculate(const int rates_total,
 
       if(sc == SigStrong && ShowStrongSignals && ( (rates_total-1) - lastArrowBarBuy >= MinBarsBetweenArrows) )
       {
-         DrawAnchoredArrow(StrongBuyBuffer, price[1] - ArrowOffset * _Point, StrongSignalColor);
+          DrawAnchoredArrow(StrongBuyBuffer, price[1] - ArrowOffset * _Point);
          firedStrongBuy = true;
          lastArrowBarBuy = rates_total-1;
-         PersistArrowEvent(tAnchorM5, 1);
+         
       }
       else if(sc == SigNormal && ShowNormalSignals && ( (rates_total-1) - lastArrowBarBuy >= MinBarsBetweenArrows) )
       {
-         DrawAnchoredArrow(BuyArrowBuffer, price[1] - ArrowOffset * _Point, BuyArrowColor);
+          DrawAnchoredArrow(BuyArrowBuffer, price[1] - ArrowOffset * _Point);
          firedBuy = true;
          lastArrowBarBuy = rates_total-1;
-         PersistArrowEvent(tAnchorM5, 3);
+         
       }
       // если понижен до SigEarly — отрисуем ранний вход
       else if(sc == SigEarly && ShowEarlySignals && ( (rates_total-1) - lastArrowBarEarlyB >= MinBarsBetweenArrows) )
       {
-         DrawAnchoredArrow(EarlyBuyBuffer, price[1] - ArrowOffset * _Point, EarlyBuyColor);
+          DrawAnchoredArrow(EarlyBuyBuffer, price[1] - ArrowOffset * _Point);
          firedEarlyBuy = true;
          lastArrowBarEarlyB = rates_total-1;
-         PersistArrowEvent(tAnchorM5, 5);
+         
       }
        lastSignal = 1;
        earlyExitShown = false; // новая позиция — сбрасываем флаг раннего выхода
-       // Зафиксировать уровни на момент входа
-       lastPivotH1AtEntry  = pivH1.low;   // Long: выходим по пробою PivotLow_H1
-       lastPivotM15AtEntry = pivM15.low;  // Soft: PivotLow_M15
-       lastPivotM5AtEntry  = pivM5.low;
+       // Зафиксировать уровни и их "свежесть" (время подтверждения) на момент входа
+       lastPivotH1AtEntry   = pivH1.low;   lastPivotH1TimeAtEntry  = pivH1.low_time;   // Long: пробой PivotLow_H1
+       lastPivotM15AtEntry  = pivM15.low;  lastPivotM15TimeAtEntry = pivM15.low_time;  // Soft: PivotLow_M15
+       lastPivotM5AtEntry   = pivM5.low;   lastPivotM5TimeAtEntry  = pivM5.low_time;
        // Выбрать целевой уровень выхода в зависимости от режима
        if(ExitLogic == Exit_H1)
        {
@@ -2102,17 +1903,27 @@ int OnCalculate(const int rates_total,
           double aBuf[]; ArraySetAsSeries(aBuf, true);
           double atrM15 = 0.0; if(atrHandleN!=INVALID_HANDLE && CopyBuffer(atrHandleN,0,1,1,aBuf)==1) atrM15=aBuf[0];
           double minAllowed = ExitNearestAtrK * atrM15;
-          double candidates[3]; candidates[0]=lastPivotM5AtEntry; candidates[1]=lastPivotM15AtEntry; candidates[2]=lastPivotH1AtEntry;
+           double candidates[3]; candidates[0]=lastPivotM5AtEntry; candidates[1]=lastPivotM15AtEntry; candidates[2]=lastPivotH1AtEntry;
+           datetime times[3];   times[0]=lastPivotM5TimeAtEntry;  times[1]=lastPivotM15TimeAtEntry;  times[2]=lastPivotH1TimeAtEntry;
           // дистанция считаем от цены входа (закрытая цена бара входа)
           double entryPrice = price[1];
-          double best = lastPivotH1AtEntry; double bestDist = 1e100;
-          for(int ci=0; ci<3; ++ci)
-          {
-             double pv = candidates[ci];
-             double d  = MathAbs(entryPrice - pv);
-             if(minAllowed>0.0 && d < minAllowed) continue; // слишком близко
-             if(d < bestDist){ bestDist=d; best=pv; }
-          }
+           // Стоимость = дистанция + бонус за свежесть (младшая стоимость лучше)
+           double best = lastPivotH1AtEntry; double bestCost = 1e100;
+           for(int ci=0; ci<3; ++ci)
+           {
+              double pv = candidates[ci]; datetime tPv = times[ci];
+              double d  = MathAbs(entryPrice - pv);
+              if(minAllowed>0.0 && d < minAllowed) continue; // слишком близко
+              double recencyBonus = 0.0;
+              if(atrM15>0.0 && tPv>0)
+              {
+                 // нормализуем время: чем свежее, тем меньше штраф (0..~1 ATR)
+                 double hoursAgo = (double)(TimeCurrent() - tPv) / 3600.0;
+                 recencyBonus = MathMin(1.0*atrM15, 0.05*atrM15 * hoursAgo); // 0.05 ATR за каждый час давности
+              }
+              double cost = d + recencyBonus;
+              if(cost < bestCost){ bestCost=cost; best=pv; }
+           }
           lastExitPivot = best;
        }
        // legacy совместимость: removed lastPivot assignment
@@ -2169,30 +1980,30 @@ int OnCalculate(const int rates_total,
 
        if(sc == SigStrong && ShowStrongSignals && ( (rates_total-1) - lastArrowBarSell >= MinBarsBetweenArrows) )
       {
-         DrawAnchoredArrow(StrongSellBuffer, price[1] + ArrowOffset * _Point, StrongSignalColor);
+          DrawAnchoredArrow(StrongSellBuffer, price[1] + ArrowOffset * _Point);
          firedStrongSell = true;
          lastArrowBarSell = rates_total-1;
-         PersistArrowEvent(tAnchorM5, 2);
+         
       }
       else if(sc == SigNormal && ShowNormalSignals && ( (rates_total-1) - lastArrowBarSell >= MinBarsBetweenArrows) )
       {
-         DrawAnchoredArrow(SellArrowBuffer, price[1] + ArrowOffset * _Point, SellArrowColor);
+          DrawAnchoredArrow(SellArrowBuffer, price[1] + ArrowOffset * _Point);
          firedSell = true;
          lastArrowBarSell = rates_total-1;
-         PersistArrowEvent(tAnchorM5, 4);
+         
       }
       else if(sc == SigEarly && ShowEarlySignals && ( (rates_total-1) - lastArrowBarEarlyS >= MinBarsBetweenArrows) )
       {
-         DrawAnchoredArrow(EarlySellBuffer, price[1] + ArrowOffset * _Point, EarlySellColor);
+          DrawAnchoredArrow(EarlySellBuffer, price[1] + ArrowOffset * _Point);
          firedEarlySell = true;
          lastArrowBarEarlyS = rates_total-1;
-         PersistArrowEvent(tAnchorM5, 6);
+         
       }
        lastSignal = -1;
        earlyExitShown = false; // новая позиция — сбрасываем флаг раннего выхода
-       lastPivotH1AtEntry  = pivH1.high;  // Short: выходим по пробою PivotHigh_H1
-       lastPivotM15AtEntry = pivM15.high; // Soft: PivotHigh_M15
-        lastPivotM5AtEntry  = pivM5.high;
+       lastPivotH1AtEntry   = pivH1.high;  lastPivotH1TimeAtEntry  = pivH1.high_time; // Short: пробой PivotHigh_H1
+       lastPivotM15AtEntry  = pivM15.high; lastPivotM15TimeAtEntry = pivM15.high_time; // Soft: PivotHigh_M15
+        lastPivotM5AtEntry   = pivM5.high;  lastPivotM5TimeAtEntry  = pivM5.high_time;
        if(ExitLogic == Exit_H1)
        {
           lastExitPivot = lastPivotH1AtEntry;
@@ -2207,29 +2018,37 @@ int OnCalculate(const int rates_total,
           double aBuf2[]; ArraySetAsSeries(aBuf2, true);
           double atrM152 = 0.0; if(atrHandleN2!=INVALID_HANDLE && CopyBuffer(atrHandleN2,0,1,1,aBuf2)==1) atrM152=aBuf2[0];
           double minAllowed2 = ExitNearestAtrK * atrM152;
-          double candidates2[3]; candidates2[0]=lastPivotM5AtEntry; candidates2[1]=lastPivotM15AtEntry; candidates2[2]=lastPivotH1AtEntry;
+           double candidates2[3]; candidates2[0]=lastPivotM5AtEntry; candidates2[1]=lastPivotM15AtEntry; candidates2[2]=lastPivotH1AtEntry;
+           datetime times2[3];   times2[0]=lastPivotM5TimeAtEntry;  times2[1]=lastPivotM15TimeAtEntry;  times2[2]=lastPivotH1TimeAtEntry;
           double entryPrice2 = price[1];
-          double best2 = lastPivotH1AtEntry; double bestDist2 = 1e100;
-          for(int cj=0; cj<3; ++cj)
-          {
-             double pv = candidates2[cj];
-             double d  = MathAbs(entryPrice2 - pv);
-             if(minAllowed2>0.0 && d < minAllowed2) continue;
-             if(d < bestDist2){ bestDist2=d; best2=pv; }
-          }
+           double best2 = lastPivotH1AtEntry; double bestCost2 = 1e100;
+           for(int cj=0; cj<3; ++cj)
+           {
+              double pv = candidates2[cj]; datetime tPv = times2[cj];
+              double d  = MathAbs(entryPrice2 - pv);
+              if(minAllowed2>0.0 && d < minAllowed2) continue;
+              double recencyBonus = 0.0;
+              if(atrM152>0.0 && tPv>0)
+              {
+                 double hoursAgo = (double)(TimeCurrent() - tPv) / 3600.0;
+                 recencyBonus = MathMin(1.0*atrM152, 0.05*atrM152 * hoursAgo);
+              }
+              double cost = d + recencyBonus;
+              if(cost < bestCost2){ bestCost2=cost; best2=pv; }
+           }
           lastExitPivot = best2;
        }
        // legacy совместимость: removed lastPivot assignment
    }
    else if(trendH1 == 1 && trendM5 == 1 && trendM15 != 1 && m5TrendChanged && earlyCanTrade && ShowEarlySignals && ( (rates_total-1) - lastArrowBarEarlyB >= MinBarsBetweenArrows) )
    {
-      DrawAnchoredArrow(EarlyBuyBuffer, price[1] - ArrowOffset * _Point, EarlyBuyColor);
+       DrawAnchoredArrow(EarlyBuyBuffer, price[1] - ArrowOffset * _Point);
       firedEarlyBuy = true;
       lastArrowBarEarlyB = rates_total-1;
    }
    else if(trendH1 == -1 && trendM5 == -1 && trendM15 != -1 && m5TrendChanged && earlyCanTrade && ShowEarlySignals && ( (rates_total-1) - lastArrowBarEarlyS >= MinBarsBetweenArrows) )
    {
-      DrawAnchoredArrow(EarlySellBuffer, price[1] + ArrowOffset * _Point, EarlySellColor);
+       DrawAnchoredArrow(EarlySellBuffer, price[1] + ArrowOffset * _Point);
       firedEarlySell = true;
       lastArrowBarEarlyS = rates_total-1;
    }
@@ -2242,14 +2061,14 @@ int OnCalculate(const int rates_total,
       {
          EarlyExitBuffer[1] = price[1];
           firedEarlyExit = true;
-          PersistArrowEvent(tAnchorM5, 8);
+         
           earlyExitShown = true;
       }
        else if(ShowExitSignals && !earlyExitShown && lastSignal == -1 && lastPivotM15AtEntry>0.0 && price_prev > lastPivotM15AtEntry)
       {
          EarlyExitBuffer[1] = price[1];
           firedEarlyExit = true;
-          PersistArrowEvent(tAnchorM5, 8);
+         
           earlyExitShown = true;
       }
       // Hard: по H1 pivot (сброс состояния)
@@ -2259,7 +2078,7 @@ int OnCalculate(const int rates_total,
           lastSignal = 0;
           earlyExitShown = false;
           firedHardExit = true;
-          PersistArrowEvent(tAnchorM5, 7);
+          
       }
        else if(ShowExitSignals && lastSignal == -1 && lastPivotH1AtEntry>0.0 && price_prev > lastPivotH1AtEntry)
       {
@@ -2267,7 +2086,7 @@ int OnCalculate(const int rates_total,
           lastSignal = 0;
           earlyExitShown = false;
           firedHardExit = true;
-          PersistArrowEvent(tAnchorM5, 7);
+          
       }
    }
    else
@@ -2315,7 +2134,7 @@ int OnCalculate(const int rates_total,
            lastSignal = 0;
            earlyExitShown = false;
            firedHardExit = true;
-           PersistArrowEvent(tAnchorM5, 7);
+           
        }
        else if(lastSignal == -1 && pivM5.high > 0.0 && cM5 > pivM5.high)
        {
@@ -2323,7 +2142,7 @@ int OnCalculate(const int rates_total,
            lastSignal = 0;
            earlyExitShown = false;
            firedHardExit = true;
-           PersistArrowEvent(tAnchorM5, 7);
+           
        }
    }
 
@@ -2332,7 +2151,7 @@ int OnCalculate(const int rates_total,
    {
       ReverseBuffer[1] = price[1];
        firedReversal = true;
-       PersistArrowEvent(tAnchorM5, 9);
+       
    }
    lastTrendH1  = trendH1;
    lastTrendM15 = trendM15;
@@ -2349,7 +2168,18 @@ int OnCalculate(const int rates_total,
    else if(firedEarlyExit) signalText = (UseRussian ? "Сигнал: Ранний выход" : "Signal: Early EXIT");
    else if(firedHardExit)  signalText = (UseRussian ? "Сигнал: Выход (H1 Pivot)" : "Signal: HARD EXIT");
    else if(firedReversal)  signalText = (UseRussian ? "Сигнал: Разворот" : "Signal: Reversal");
+   // Доп. пояснение: если сработал выход по M5‑пивоту, добавим пометку на панель
+   if(firedHardExit && lastSignal==0)
+   {
+      // Ничего: статус выхода уже установлен. Метка ниже добавляется отдельной строкой
+   }
    DrawRowLabel("MFV_STATUS_SIGNAL", signalText, 190);
+   // Специальная строка-пояснение к независимому выходу по M5 pivot
+   if(firedHardExit)
+   {
+      string exitNote = (UseRussian? "Exit by M5 pivot: ✓" : "Exit by M5 pivot: ✓");
+      DrawRowLabel("MFV_STATUS_EXITNOTE", exitNote, 200);
+   }
 
    // Статус CLINCH (режим зоны)
    double rangeAtr = (clinchState.atr > 0.0 ? (clinchState.range / clinchState.atr) : 0.0);
@@ -2358,9 +2188,17 @@ int OnCalculate(const int rates_total,
                      ? (UseRussian? StringFormat("zone=±%.2f ATR", ClinchAtrK)
                                   : StringFormat("zone=±%.2f ATR", ClinchAtrK))
                      : (UseRussian? "band=H/L" : "band=H/L");
+   // Покажем интервал расчёта клинча from–to для наглядности
+   string intervalText;
+   if(clinchState.fromTime>0 && clinchState.toTime>0)
+   {
+      string f = TimeToString(clinchState.fromTime, TIME_DATE|TIME_MINUTES);
+      string t = TimeToString(clinchState.toTime,   TIME_DATE|TIME_MINUTES);
+      intervalText = StringFormat("[%s → %s] ", f, t);
+   }
    string clinchText = UseRussian ?
-       StringFormat("Схватка: %s, flips=%d, range=%.2f ATR, %s", clinchOn, clinchState.flips, rangeAtr, bandText) :
-       StringFormat("Clinch: %s, flips=%d, range=%.2f ATR, %s", clinchOn, clinchState.flips, rangeAtr, bandText);
+       StringFormat("Схватка: %s, %sflips=%d, range=%.2f ATR, %s", clinchOn, intervalText, clinchState.flips, rangeAtr, bandText) :
+       StringFormat("Clinch: %s, %sflips=%d, range=%.2f ATR, %s", clinchOn, intervalText, clinchState.flips, rangeAtr, bandText);
    DrawRowLabel("MFV_STATUS_CLINCH", clinchText, 210);
 
    // Ретест отладка (косметика): выводим последнюю известную проверку ретеста
