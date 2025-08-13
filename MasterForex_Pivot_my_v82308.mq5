@@ -1007,12 +1007,12 @@ int OnInit()
     rsiH    = iRSI(_Symbol, PERIOD_M15, RsiPeriod, PRICE_CLOSE);
 
    // Лёгкий прогрев ZigZag, чтобы избежать -1 в логах (триггерим вычисление буферов)
-   auto WarmupZZ = [](int h)
+   void WarmupZZ(int h)
    {
       if(h==INVALID_HANDLE) return;
       double tmp[]; ArraySetAsSeries(tmp,true);
       CopyBuffer(h,0,1,2,tmp); CopyBuffer(h,1,1,2,tmp); CopyBuffer(h,2,1,2,tmp);
-   };
+   }
    WarmupZZ(zzH1); WarmupZZ(zzM15); WarmupZZ(zzM5); if(UseTF_H4) WarmupZZ(zzH4); if(UseTF_D1) WarmupZZ(zzD1);
 
    // Протоколирование наличия истории (без принудительного вывода -1 по ZZ на старте)
