@@ -418,12 +418,7 @@ bool IsVolumeConfirmedOnTimeframeAt(const ENUM_TIMEFRAMES tf, const int sh)
    return (avg>0.0 ? cur > avg*MinVolumeMultiplier : true);
 }
 
-void DrawAnchoredArrowAt(const datetime tAnchor, double &buffer[], const double priceAtCurrentTF)
-{
-   int sh = iBarShift(_Symbol, (ENUM_TIMEFRAMES)Period(), tAnchor, false);
-   if(sh<1) sh=1;
-   buffer[sh] = priceAtCurrentTF;
-}
+// (removed unused DrawAnchoredArrowAt)
 
 int CopyCloseH1(const int bars, double &buf[])
 {
@@ -776,7 +771,7 @@ bool CalculatePivots(const ENUM_TIMEFRAMES tf, TFPivots &io)
    }
 
    bool updated=false;
-   // ATR-адаптация: требуем минимальную длину качели (если ATR недоступен — не блокируем обновление)
+   // ATR-адаптация: требуем минимальную длину качели; если короче порога — не обновляем подтверждённые уровни
    if(AtrDeviationK > 0.0 && lastHigh>0.0 && lastLow>0.0)
    {
       int atrH = iATR(_Symbol, tf, 14);
@@ -785,7 +780,11 @@ bool CalculatePivots(const ENUM_TIMEFRAMES tf, TFPivots &io)
       if(atrTf>0.0)
       {
          double thr = MathMax(InpDeviation*_Point, AtrDeviationK*atrTf);
-         if(MathAbs(lastHigh-lastLow) < thr) { /* слишком коротко — оставляем как есть */ }
+         if(MathAbs(lastHigh-lastLow) < thr)
+         {
+            // Слишком короткая качель — пропускаем обновление обоих уровней на этом тике
+            shHigh = -1; shLow = -1;
+         }
       }
    }
 
@@ -1119,17 +1118,20 @@ bool IsVolumeConfirmedOnTimeframe(ENUM_TIMEFRAMES tf)
    if(!EnableVolumeFilter) return true;
    
    // Используем завершенный бар для более точного анализа
-   double currentVolume = (double)iVolume(_Symbol, tf, 1);
-   double avgVolume = 0;
-   
-   // Средний объем за последние 20 завершенных баров
-   for(int i = 2; i <= 21; i++)
-   {
-      avgVolume += (double)iVolume(_Symbol, tf, i);
-   }
-   avgVolume /= 20;
-   
-   return currentVolume > avgVolume * MinVolumeMultiplier;
+    double currentVolume = (double)iVolume(_Symbol, tf, 1);
+    double avgVolume = 0.0; int cnt=0;
+    
+    // Средний объем за последние 20 завершенных баров (исключая нули)
+    for(int i = 2; i <= 21; i++)
+    {
+       double v = (double)iVolume(_Symbol, tf, i);
+       if(v <= 0) continue;
+       avgVolume += v;
+       cnt++;
+    }
+    if(cnt>0) avgVolume /= cnt; else avgVolume = 0.0;
+    
+    return (avgVolume>0.0 ? currentVolume > avgVolume * MinVolumeMultiplier : true);
 }
 
 //+------------------------------------------------------------------+
@@ -1334,12 +1336,7 @@ void OnDeinit(const int reason)
    
    if(!ShowClassicPivot)
    {
-      ObjectDelete(0, objPivot);
-      ObjectDelete(0, objR1);
-      ObjectDelete(0, objR2);
-      ObjectDelete(0, objS1);
-      ObjectDelete(0, objS2);
-    ObjectDelete(0, "MFV_WARMUP");
+     ObjectDelete(0, "MFV_WARMUP");
    }
 
    // Удаление линий и зон, созданных индикатором (dual‑pivot)
@@ -1384,13 +1381,7 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 //| Determine trend / Определение тренда                              |
 //+------------------------------------------------------------------+
-int GetTrend(double price, double pivot, double tol_param=0.0)
-{
-   double tol = (tol_param>0.0 ? tol_param : MathMax(2*_Point, (AtrDeviationK>0.0 ? 0.1*GetATR_H1() : 2*_Point)));
-   if(price > pivot + tol) return 1;
-   if(price < pivot - tol) return -1;
-   return 0;
-}
+// (removed unused legacy GetTrend)
 
 //+------------------------------------------------------------------+
 //| Calculate classic Pivot levels / Расчет классических уровней Pivot |
@@ -1496,19 +1487,7 @@ void WarmupZZHandle(const int h)
    CopyBuffer(h,2,1,2,tmp);
 }
 
-// Полная очистка всех буферов стрелок
-void ClearAllArrowBuffers()
-{
-   ArrayInitialize(BuyArrowBuffer,   EMPTY_VALUE);
-   ArrayInitialize(SellArrowBuffer,  EMPTY_VALUE);
-   ArrayInitialize(EarlyBuyBuffer,   EMPTY_VALUE);
-   ArrayInitialize(EarlySellBuffer,  EMPTY_VALUE);
-   ArrayInitialize(ExitBuffer,       EMPTY_VALUE);
-   ArrayInitialize(ReverseBuffer,    EMPTY_VALUE);
-   ArrayInitialize(StrongBuyBuffer,  EMPTY_VALUE);
-   ArrayInitialize(StrongSellBuffer, EMPTY_VALUE);
-   ArrayInitialize(EarlyExitBuffer,  EMPTY_VALUE);
-}
+// (removed unused ClearAllArrowBuffers)
 
 // Обрезает историю сигналов: оставляет только последние keepTotal события (по всем буферам сразу)
 void PruneAllSignalsToLastN(const int rates_total, const int keepTotal)
@@ -1783,9 +1762,10 @@ int OnCalculate(const int rates_total,
 
    // Статические переменные для отслеживания состояния
    static int    lastSignal   = 0;   // 1 buy, -1 sell, 0 none
-   static double lastPivot    = 0.0; // legacy for H1
+   // removed legacy lastPivot
    static int    lastTrendH1  = 0;
    static int    lastTrendM15 = 0;
+   static int    lastTrendM5  = 0;
    // Пивоты, зафиксированные на баре входа (для разных режимов выхода)
    static double lastPivotH1AtEntry  = 0.0;
    static double lastPivotM15AtEntry = 0.0;
@@ -1889,6 +1869,9 @@ int OnCalculate(const int rates_total,
    DrawRowLabel("MFV_STATUS_VOLUME", volumeText, 150);
    DrawRowLabel("MFV_STATUS_SESSION", sessionText, 170);
 
+   // Смена тренда на M5 как триггер входа (по MF-V). Исключаем первый запуск (lastTrendM5==0)
+   bool m5TrendChanged = (lastTrendM5 != 0 && trendM5 != 0 && trendM5 != lastTrendM5);
+
    // Логика сигналов MasterForex-V
    bool firedStrongBuy=false, firedStrongSell=false, firedBuy=false, firedSell=false;
    bool firedEarlyBuy=false, firedEarlySell=false, firedHardExit=false, firedEarlyExit=false, firedReversal=false;
@@ -1921,9 +1904,9 @@ int OnCalculate(const int rates_total,
    }
 
    // Для Long: дополнительно требуем, чтобы M5 пробил свой PivotHigh_M5 и был pullback (обеспечивается фильтрами подтверждения/импульса)
-   if(trendH1 == 1 && trendM15 == 1 && trendM5 == 1 && (cM5 > pivM5.high) && canTrade)
+   if(trendH1 == 1 && trendM15 == 1 && trendM5 == 1 && (cM5 > pivM5.high) && m5TrendChanged && canTrade)
    {
-      SigClass sc = (analysis.strength >= 3) ? SigStrong : SigNormal;
+      SigClass sc = SigStrong; // три ТФ совпали — базово сильный сигнал по MF-V
       sc = ApplyClinch(sc, UseClinchFilter ? clinchState.isClinch : false);
 
       // Подтверждение пробоя H1 pivot по правилам
@@ -2024,12 +2007,11 @@ int OnCalculate(const int rates_total,
           }
           lastExitPivot = best;
        }
-       // legacy совместимость
-       lastPivot = lastPivotH1AtEntry;
+       // legacy совместимость: removed lastPivot assignment
    }
-   else if(trendH1 == -1 && trendM15 == -1 && trendM5 == -1 && (cM5 < pivM5.low) && canTrade)
+   else if(trendH1 == -1 && trendM15 == -1 && trendM5 == -1 && (cM5 < pivM5.low) && m5TrendChanged && canTrade)
    {
-      SigClass sc = (analysis.strength >= 3) ? SigStrong : SigNormal;
+      SigClass sc = SigStrong; // три ТФ совпали — базово сильный сигнал по MF-V
       sc = ApplyClinch(sc, UseClinchFilter ? clinchState.isClinch : false);
 
       // Подтверждение пробоя H1 pivot по правилам
@@ -2123,15 +2105,15 @@ int OnCalculate(const int rates_total,
           }
           lastExitPivot = best2;
        }
-       lastPivot = lastPivotH1AtEntry;
+       // legacy совместимость: removed lastPivot assignment
    }
-   else if(trendH1 == 1 && trendM5 == 1 && trendM15 != 1 && earlyCanTrade && ShowEarlySignals && ( (rates_total-1) - lastArrowBarEarlyB >= MinBarsBetweenArrows) )
+   else if(trendH1 == 1 && trendM5 == 1 && trendM15 != 1 && m5TrendChanged && earlyCanTrade && ShowEarlySignals && ( (rates_total-1) - lastArrowBarEarlyB >= MinBarsBetweenArrows) )
    {
       DrawAnchoredArrow(EarlyBuyBuffer, price[1] - ArrowOffset * _Point, EarlyBuyColor);
       firedEarlyBuy = true;
       lastArrowBarEarlyB = rates_total-1;
    }
-   else if(trendH1 == -1 && trendM5 == -1 && trendM15 != -1 && earlyCanTrade && ShowEarlySignals && ( (rates_total-1) - lastArrowBarEarlyS >= MinBarsBetweenArrows) )
+   else if(trendH1 == -1 && trendM5 == -1 && trendM15 != -1 && m5TrendChanged && earlyCanTrade && ShowEarlySignals && ( (rates_total-1) - lastArrowBarEarlyS >= MinBarsBetweenArrows) )
    {
       DrawAnchoredArrow(EarlySellBuffer, price[1] + ArrowOffset * _Point, EarlySellColor);
       firedEarlySell = true;
@@ -2210,6 +2192,27 @@ int OnCalculate(const int rates_total,
       }
    }
 
+   // Доп. выход по MF‑V: пробой актуального пивота M5 против позиции (работает независимо от ExitLogic)
+   if(ShowExitSignals && lastSignal != 0)
+   {
+       if(lastSignal == 1 && pivM5.low > 0.0 && cM5 < pivM5.low)
+       {
+           ExitBuffer[1] = price[1];
+           lastSignal = 0;
+           earlyExitShown = false;
+           firedHardExit = true;
+           PersistArrowEvent(tAnchorM5, 7);
+       }
+       else if(lastSignal == -1 && pivM5.high > 0.0 && cM5 > pivM5.high)
+       {
+           ExitBuffer[1] = price[1];
+           lastSignal = 0;
+           earlyExitShown = false;
+           firedHardExit = true;
+           PersistArrowEvent(tAnchorM5, 7);
+       }
+   }
+
    // Логика разворота (привязанная к текущему ТФ, рисуем только на закрытом баре)
    if(ShowReversalSignals && trendH1 == trendM15 && trendH1 != 0 && trendH1 != lastTrendH1 && lastTrendH1 != 0)
    {
@@ -2219,6 +2222,7 @@ int OnCalculate(const int rates_total,
    }
    lastTrendH1  = trendH1;
    lastTrendM15 = trendM15;
+   lastTrendM5  = trendM5;
 
    // Текущий сигнал (строка статуса)
    string signalText = "-";
@@ -2250,24 +2254,40 @@ int OnCalculate(const int rates_total,
    // Панель консенсуса, если включено
    if(Consensus != Cons_Off)
    {
-      int emaD=0; bool rOK=true; double rV=50.0; bool kons=true; string sOK="-";
-      int dirPanel = 0; bool rsiGoodPanel = true;
+      int emaD=0; bool rOK=true; double rV=50.0; bool kons=true;
+      int dirPanel = 0;
       if(ReadFilters(1, emaD, rOK, rV))
       {
-         // Сформируем статус 2/3 без изменения сигналов
-         int votes=1; if(emaD!=0) votes++; // MF-ядро + EMA (направление учтём ниже)
-         // Направление берём по H1-тренду, если он определён
+         // Направление ядра по H1
          dirPanel = (trendH1>0?+1:(trendH1<0?-1:0));
-         if(dirPanel!=0){ if(emaD==dirPanel){} else votes--; }
-         rsiGoodPanel = (dirPanel>0 ? (rV <= (RsiOB - RsiHyst)) : (dirPanel<0 ? (rV >= (RsiOS + RsiHyst)) : true));
-         if(rsiGoodPanel) votes++;
-         bool ok2 = (votes>=2);
-         sOK = ok2? (UseRussian?"2/3 ✓":"2/3 ✓") : (UseRussian?"2/3 ✗":"2/3 ✗");
+
+         // Голоса
+         int coreVote = (dirPanel!=0 ? 1 : 0);
+         int emaVote  = ((dirPanel!=0 && emaD==dirPanel) ? 1 : 0);
+         bool rsiBuyOK  = (rV <= (RsiOB - RsiHyst));
+         bool rsiSellOK = (rV >= (RsiOS + RsiHyst));
+         int rsiVote = 0;
+         if(dirPanel>0) rsiVote = (rsiBuyOK ? 1 : 0);
+         else if(dirPanel<0) rsiVote = (rsiSellOK ? 1 : 0);
+         else rsiVote = 0;
+         int votes = coreVote + emaVote + rsiVote;
+         string checkMark = (votes>=2 ? "✓" : "✗");
+
+         // Артефакты отображения
+         string side = (dirPanel>0?"BUY":(dirPanel<0?"SELL":"–"));
+         string arrowH1 = (dirPanel>0?"↑":(dirPanel<0?"↓":"–"));
+         string coreMark = (dirPanel!=0?"✓":"–");
+         string emaArrow = (emaD>0?"↑":(emaD<0?"↓":"–"));
+         string emaMark;
+         if(dirPanel==0) emaMark = "–"; else emaMark = (emaD==dirPanel?"✓":"✗");
+         string rsiMark = "–";
+         if(dirPanel>0) rsiMark = (rsiBuyOK?"✓":"✗");
+         else if(dirPanel<0) rsiMark = (rsiSellOK?"✓":"✗");
+
+         string consText = StringFormat("Consensus: %d/3 %s | [H1: %s %s | EMA(M15): %s %s | RSI(M15): %s]",
+                                        votes, checkMark, arrowH1, coreMark, emaArrow, emaMark, rsiMark);
+         DrawRowLabel("MFV_STATUS_CONS", consText, 250);
       }
-      string consText = UseRussian ?
-         StringFormat("Консенсус: %s  | EMA:%s | RSI:%s", sOK, (emaD>0?"↑":(emaD<0?"↓":"–")), ( (trendH1==0)?"–":( (dirPanel>0 ? (rV <= (RsiOB - RsiHyst)) : (rV >= (RsiOS + RsiHyst)) )?"✓":"✗") )) :
-         StringFormat("Consensus: %s  | EMA:%s | RSI:%s", sOK, (emaD>0?"↑":(emaD<0?"↓":"–")), ( (trendH1==0)?"–":( (dirPanel>0 ? (rV <= (RsiOB - RsiHyst)) : (rV >= (RsiOS + RsiHyst)) )?"✓":"✗") ));
-      DrawRowLabel("MFV_STATUS_CONS", consText, 250);
    }
 
    // Отрисовка dual‑pivot линий (названия согласно ТЗ)
