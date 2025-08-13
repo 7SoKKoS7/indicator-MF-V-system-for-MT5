@@ -33,11 +33,15 @@ input bool   UseTF_D1 = true;                 // Использовать D1 dua
 
 input group "=== Сессии ==="
 input int    SessionGMTOffset = 2;            // Смещение серверного времени относительно GMT (пример: 2 для GMT+2)
+input bool   UseDST = true;                    // Авто‑поправка на летнее время (DST) по европ. правилу
 
 input group "=== Настройки ZigZag ==="
 input int    InpDepth = 12;                   // Глубина ZigZag
 input double InpDeviation = 5.0;              // Отклонение в пунктах
 input double AtrDeviationK = 0.0;             // Коэф. ATR для адаптивного порога (0=выкл)
+// Параметры ZigZag по ТФ (для устойчивых свингов на старших ТФ)
+input int    Depth_M5  = 12,  Depth_M15 = 12,  Depth_H1 = 12,  Depth_H4 = 12,  Depth_D1 = 12;
+input double Dev_M5    = 5.0, Dev_M15   = 7.0, Dev_H1   = 12.0, Dev_H4   = 20.0, Dev_D1   = 30.0;
 
 input group "=== Толеранс тренда (ATR) ==="
 input double TrendTolAtrK = 0.10;             // Толеранс сравнения цены с pivot: k * ATR(H1)
@@ -575,8 +579,10 @@ bool CheckH1Breakout(const double pivotH1_H, const double pivotH1_L, const int d
 }
 
 // Ретест уровня H1 на M15 с отскоком: для buy ретест PivotHigh_H1, для sell — PivotLow_H1
-bool CheckRetestBounce_M15(const double pivotH1Level, const int dir, datetime fromTime)
+bool CheckRetestBounce_M15(const double pivotH1Level, const int dir, datetime fromTime,
+                           bool &outClose, bool &outWick, bool &outVol)
 {
+    outClose=false; outWick=false; outVol=false;
    // Используем завершенные бары M15, не более 48
    // Правильный вызов ATR через хэндл и CopyBuffer
    int atrHandle = iATR(_Symbol, PERIOD_M15, 14);
@@ -619,13 +625,17 @@ bool CheckRetestBounce_M15(const double pivotH1Level, const int dir, datetime fr
          if(cnt>0) avg/=cnt; else avg=0.0;
          volOk = (avg>0.0 ? ( (double)v >= RetestVolMult*avg ) : true);
       }
-      if(closeOk && wickOk && volOk) return true;
+       // update outs for last touched bar we evaluate
+       outClose = closeOk; outWick = wickOk; outVol = volOk;
+       if(closeOk && wickOk && volOk) return true;
    }
    return false;
 }
 
-bool CheckRetestBounce_M5(const double pivotH1Level, const int dir, datetime fromTime)
+bool CheckRetestBounce_M5(const double pivotH1Level, const int dir, datetime fromTime,
+                          bool &outClose, bool &outWick, bool &outVol)
 {
+    outClose=false; outWick=false; outVol=false;
    int shStart = iBarShift(_Symbol, PERIOD_M5, fromTime, false);
    int bars = MathMin(MathMax(RetestWindowM5, 1), 120);
    int atrHandle = iATR(_Symbol, PERIOD_M5, 14);
@@ -657,7 +667,8 @@ bool CheckRetestBounce_M5(const double pivotH1Level, const int dir, datetime fro
          if(cnt>0) avg/=cnt; else avg=0.0;
          volOk = (avg>0.0 ? ( (double)v >= RetestVolMult*avg ) : true);
       }
-      if(closeOk && wickOk && volOk) return true;
+       outClose = closeOk; outWick = wickOk; outVol = volOk;
+       if(closeOk && wickOk && volOk) return true;
    }
    return false;
 }
@@ -673,9 +684,12 @@ double GetATR_H1()
 {
    double a[];
    ArraySetAsSeries(a, true);
-   if(CopyBuffer(atrH1Handle, 0, 1, 1, a) == 1) // закрытый бар
+   if(atrH1Handle!=INVALID_HANDLE && CopyBuffer(atrH1Handle, 0, 1, 1, a) == 1 && a[0] > 0.0)
+   {
+      lastAtrH1 = a[0];
       return a[0];
-   return lastAtrH1 > 0 ? lastAtrH1 : 0.0;
+   }
+   return lastAtrH1; // может быть 0 до первого успешного чтения
 }
 
 //+------------------------------------------------------------------+
@@ -1118,7 +1132,32 @@ bool IsValidTradingSession()
    MqlDateTime dt;
    TimeToStruct(serverTime, dt);
    int hourServer = dt.hour;
-   int hourGMT = hourServer - SessionGMTOffset;
+   int offset = SessionGMTOffset;
+   if(UseDST)
+   {
+      // Примитивная европ. логика DST: послед. воскресенье марта до послед. воскресенья октября — +1 час
+      int y = dt.year, m = dt.mon, d = dt.day, w = dt.day_of_week; // 0=Sun
+      // Найти последнее воскресенье месяца m
+      auto lastSunday = [&](int year, int month)->int{
+         // возьмём 31-е, откатимся до реального конца месяца, затем до воскресенья
+         MqlDateTime tmp; tmp.year=year; tmp.mon=month; tmp.day=28; tmp.hour=0; tmp.min=0; tmp.sec=0;
+         datetime t = StructToTime(tmp);
+         // прокрутим до начала след. месяца и шаг назад
+         int mdays = 3; // минимум 28, но безопасно шагами на 1 день вперёд
+         while(true){ MqlDateTime tt; TimeToStruct(t + mdays*86400, tt); if(tt.mon!=month) break; mdays++; }
+         datetime endm = t + (mdays-1)*86400;
+         MqlDateTime em; TimeToStruct(endm, em);
+         int dow = em.day_of_week; // 0=Sun
+         int delta = dow; // сколько дней откатить до воскресенья
+         return em.day - delta;
+      };
+      int lastSunMar = lastSunday(y, 3);
+      int lastSunOct = lastSunday(y,10);
+      // В DST если: (м>3 и м<10) или (март и день>=lastSunMar) или (октябрь и день<lastSunOct)
+      bool inDST = (m>3 && m<10) || (m==3 && d>=lastSunMar) || (m==10 && d<lastSunOct);
+      if(inDST) offset += 1;
+   }
+   int hourGMT = hourServer - offset;
    if(hourGMT < 0)  hourGMT += 24;
    if(hourGMT >= 24) hourGMT -= 24;
 
@@ -1256,27 +1295,27 @@ int OnInit()
    PlotIndexSetInteger(8, PLOT_LINE_COLOR, EarlyExitColor);
 
    // Инициализация ZigZag per TF (built-in) с проверкой хэндлов
-   zzH1  = iCustom(_Symbol, PERIOD_H1,  "ZigZag", InpDepth, InpDeviation, 3);
+   zzH1  = iCustom(_Symbol, PERIOD_H1,  "ZigZag", Depth_H1, Dev_H1, 3);
    if(zzH1 == INVALID_HANDLE)
-      zzH1 = iCustom(_Symbol, PERIOD_H1,  "ZigZag", InpDepth, InpDeviation, 3);
+      zzH1 = iCustom(_Symbol, PERIOD_H1,  "ZigZag", Depth_H1, Dev_H1, 3);
    if(zzH1 == INVALID_HANDLE)
    {
       Print(__FUNCTION__, ": ZigZag H1 INVALID_HANDLE");
       return(INIT_FAILED);
    }
 
-   zzM15 = iCustom(_Symbol, PERIOD_M15, "ZigZag", InpDepth, InpDeviation, 3);
+   zzM15 = iCustom(_Symbol, PERIOD_M15, "ZigZag", Depth_M15, Dev_M15, 3);
    if(zzM15 == INVALID_HANDLE)
-      zzM15 = iCustom(_Symbol, PERIOD_M15, "ZigZag", InpDepth, InpDeviation, 3);
+      zzM15 = iCustom(_Symbol, PERIOD_M15, "ZigZag", Depth_M15, Dev_M15, 3);
    if(zzM15 == INVALID_HANDLE)
    {
       Print(__FUNCTION__, ": ZigZag M15 INVALID_HANDLE");
       return(INIT_FAILED);
    }
 
-   zzM5  = iCustom(_Symbol, PERIOD_M5,  "ZigZag", InpDepth, InpDeviation, 3);
+   zzM5  = iCustom(_Symbol, PERIOD_M5,  "ZigZag", Depth_M5, Dev_M5, 3);
    if(zzM5 == INVALID_HANDLE)
-      zzM5  = iCustom(_Symbol, PERIOD_M5,  "ZigZag", InpDepth, InpDeviation, 3);
+      zzM5  = iCustom(_Symbol, PERIOD_M5,  "ZigZag", Depth_M5, Dev_M5, 3);
    if(zzM5 == INVALID_HANDLE)
    {
       Print(__FUNCTION__, ": ZigZag M5 INVALID_HANDLE");
@@ -1284,17 +1323,17 @@ int OnInit()
    }
    if(UseTF_H4)
    {
-      zzH4 = iCustom(_Symbol, PERIOD_H4, "ZigZag", InpDepth, InpDeviation, 3);
+      zzH4 = iCustom(_Symbol, PERIOD_H4, "ZigZag", Depth_H4, Dev_H4, 3);
       if(zzH4 == INVALID_HANDLE)
-         zzH4 = iCustom(_Symbol, PERIOD_H4, "ZigZag", InpDepth, InpDeviation, 3);
+         zzH4 = iCustom(_Symbol, PERIOD_H4, "ZigZag", Depth_H4, Dev_H4, 3);
       if(zzH4 == INVALID_HANDLE)
          Print(__FUNCTION__, ": ZigZag H4 INVALID_HANDLE (optional)");
    }
    if(UseTF_D1)
    {
-      zzD1 = iCustom(_Symbol, PERIOD_D1, "ZigZag", InpDepth, InpDeviation, 3);
+      zzD1 = iCustom(_Symbol, PERIOD_D1, "ZigZag", Depth_D1, Dev_D1, 3);
       if(zzD1 == INVALID_HANDLE)
-         zzD1 = iCustom(_Symbol, PERIOD_D1, "ZigZag", InpDepth, InpDeviation, 3);
+         zzD1 = iCustom(_Symbol, PERIOD_D1, "ZigZag", Depth_D1, Dev_D1, 3);
       if(zzD1 == INVALID_HANDLE)
          Print(__FUNCTION__, ": ZigZag D1 INVALID_HANDLE (optional)");
    }
@@ -1400,6 +1439,9 @@ void OnDeinit(const int reason)
 
    // Сохраняем актуальные pivots в глобальные переменные при выгрузке индикатора
    SaveAllPivotsGV();
+
+    // Всегда удаляем warm-up лейбл, чтобы не зависал после снятия индикатора
+    ObjectDelete(0, "MFV_WARMUP");
 }
 
 // (legacy single-pivot functions removed — using dual-pivot via ZigZag buffers)
@@ -1621,6 +1663,8 @@ int OnCalculate(const int rates_total,
    if(rates_total < 2) return(0);
    
    ArraySetAsSeries(price, true);
+   // Форс-обновление ATR(H1) для стабильных толерансов/клинча
+   GetATR_H1();
     
     // «Тёплый старт»: динамически оцениваем необходимый минимум истории и готовность ZigZag
    const int needM5  = MathMax(600,  InpDepth*20 + RetestWindowM5  + 200);
@@ -1948,17 +1992,17 @@ int OnCalculate(const int rates_total,
              bool okH1  = CheckH1Breakout(pivH1.high, pivH1.low, dir);
           datetime h1_open = iTime(_Symbol, PERIOD_H1, 1);
           datetime fromTime = h1_open + PeriodSeconds(PERIOD_H1);
-             bool okRetM15 = CheckRetestBounce_M15(pivH1.high, dir, fromTime);
-             bool okRetM5  = (RetestAllowM5 ? CheckRetestBounce_M5(pivH1.high, dir, fromTime) : false);
+             bool cOk=false,wOk=false,vOk=false, cOk5=false,wOk5=false,vOk5=false;
+             bool okRetM15 = CheckRetestBounce_M15(pivH1.high, dir, fromTime, cOk,wOk,vOk);
+             bool okRetM5  = (RetestAllowM5 ? CheckRetestBounce_M5(pivH1.high, dir, fromTime, cOk5,wOk5,vOk5) : false);
             bool okRet = (okRetM15 || okRetM5);
             bool okBoth = okH1 && okRet;
             if(sc==SigStrong && !okBoth)        sc = SigNormal;
             else if(sc==SigNormal && !okH1)     sc = SigEarly;
              // Save debug state for panel
              dbgRetLastHas = true;
-             dbgRetM15Ok   = okRetM15;
-             // Volume condition is embedded; approximate via UseRetestVolume flag and okRetM15
-             dbgRetM15Vol  = (UseRetestVolume ? okRetM15 : false);
+             dbgRetM15Ok   = (cOk && wOk);
+             dbgRetM15Vol  = vOk;
              dbgRetM5Ok    = okRetM5;
          }
       }
@@ -2059,16 +2103,17 @@ int OnCalculate(const int rates_total,
             bool okH1  = CheckH1Breakout(pivH1.high, pivH1.low, dir);
           datetime h1_open2 = iTime(_Symbol, PERIOD_H1, 1);
           datetime fromTime2 = h1_open2 + PeriodSeconds(PERIOD_H1);
-          bool okRetM15b = CheckRetestBounce_M15(pivH1.low, dir, fromTime2);
-          bool okRetM5b  = (RetestAllowM5 ? CheckRetestBounce_M5(pivH1.low, dir, fromTime2) : false);
+           bool cOkb=false,wOkb=false,vOkb=false, cOk5b=false,wOk5b=false,vOk5b=false;
+           bool okRetM15b = CheckRetestBounce_M15(pivH1.low, dir, fromTime2, cOkb,wOkb,vOkb);
+           bool okRetM5b  = (RetestAllowM5 ? CheckRetestBounce_M5(pivH1.low, dir, fromTime2, cOk5b,wOk5b,vOk5b) : false);
           bool okRet = (okRetM15b || okRetM5b);
             bool okBoth = okH1 && okRet;
             if(sc==SigStrong && !okBoth)        sc = SigNormal;
             else if(sc==SigNormal && !okH1)     sc = SigEarly;
             // Save debug state for panel
             dbgRetLastHas = true;
-            dbgRetM15Ok   = okRetM15b;
-            dbgRetM15Vol  = (UseRetestVolume ? okRetM15b : false);
+            dbgRetM15Ok   = (cOkb && wOkb);
+            dbgRetM15Vol  = vOkb;
             dbgRetM5Ok    = okRetM5b;
          }
       }
