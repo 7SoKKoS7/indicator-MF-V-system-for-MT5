@@ -1006,14 +1006,12 @@ int OnInit()
     ema200H = iMA(_Symbol, PERIOD_M15, EmaSlow, 0, MODE_EMA, PRICE_CLOSE);
     rsiH    = iRSI(_Symbol, PERIOD_M15, RsiPeriod, PRICE_CLOSE);
 
-   // Лёгкий прогрев ZigZag, чтобы избежать -1 в логах (триггерим вычисление буферов)
-   void WarmupZZ(int h)
-   {
-      if(h==INVALID_HANDLE) return;
-      double tmp[]; ArraySetAsSeries(tmp,true);
-      CopyBuffer(h,0,1,2,tmp); CopyBuffer(h,1,1,2,tmp); CopyBuffer(h,2,1,2,tmp);
-   }
-   WarmupZZ(zzH1); WarmupZZ(zzM15); WarmupZZ(zzM5); if(UseTF_H4) WarmupZZ(zzH4); if(UseTF_D1) WarmupZZ(zzD1);
+   // Лёгкий прогрев ZZ‑хэндлов
+   WarmupZZHandle(zzH1);
+   WarmupZZHandle(zzM15);
+   WarmupZZHandle(zzM5);
+   if(UseTF_H4) WarmupZZHandle(zzH4);
+   if(UseTF_D1) WarmupZZHandle(zzD1);
 
    // Протоколирование наличия истории (без принудительного вывода -1 по ZZ на старте)
    PrintFormat("INIT: H1=%d M15=%d M5=%d",
@@ -1183,6 +1181,16 @@ void DrawWarmupStatus(const bool okH1, const int haveH1, const int needH1,
       ObjectSetInteger(0, nm, OBJPROP_COLOR, clrSilver);
    }
    ObjectSetString(0, nm, OBJPROP_TEXT, txt);
+}
+
+// Прогрев хэндла ZigZag: мягко инициирует вычисление буферов, чтобы уйти от BarsCalculated=-1 в логах
+void WarmupZZHandle(const int h)
+{
+   if(h==INVALID_HANDLE) return;
+   double tmp[]; ArraySetAsSeries(tmp,true);
+   CopyBuffer(h,0,1,2,tmp);
+   CopyBuffer(h,1,1,2,tmp);
+   CopyBuffer(h,2,1,2,tmp);
 }
 
 // Полная очистка всех буферов стрелок
