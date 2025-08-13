@@ -1006,14 +1006,21 @@ int OnInit()
     ema200H = iMA(_Symbol, PERIOD_M15, EmaSlow, 0, MODE_EMA, PRICE_CLOSE);
     rsiH    = iRSI(_Symbol, PERIOD_M15, RsiPeriod, PRICE_CLOSE);
 
-   // Протоколирование наличия истории и готовности ZigZag (один раз при старте)
-   PrintFormat("INIT: H1=%d M15=%d M5=%d, ZZ(H1/M15/M5)=%d/%d/%d",
-               Bars(_Symbol,PERIOD_H1), Bars(_Symbol,PERIOD_M15), Bars(_Symbol,PERIOD_M5),
-               BarsCalculated(zzH1), BarsCalculated(zzM15), BarsCalculated(zzM5));
+   // Лёгкий прогрев ZigZag, чтобы избежать -1 в логах (триггерим вычисление буферов)
+   auto WarmupZZ = [](int h)
+   {
+      if(h==INVALID_HANDLE) return;
+      double tmp[]; ArraySetAsSeries(tmp,true);
+      CopyBuffer(h,0,1,2,tmp); CopyBuffer(h,1,1,2,tmp); CopyBuffer(h,2,1,2,tmp);
+   };
+   WarmupZZ(zzH1); WarmupZZ(zzM15); WarmupZZ(zzM5); if(UseTF_H4) WarmupZZ(zzH4); if(UseTF_D1) WarmupZZ(zzD1);
+
+   // Протоколирование наличия истории (без принудительного вывода -1 по ZZ на старте)
+   PrintFormat("INIT: H1=%d M15=%d M5=%d",
+               Bars(_Symbol,PERIOD_H1), Bars(_Symbol,PERIOD_M15), Bars(_Symbol,PERIOD_M5));
    if(UseTF_H4 || UseTF_D1)
-      PrintFormat("INIT+: H4=%d D1=%d, ZZ(H4/D1)=%d/%d",
-                  Bars(_Symbol,PERIOD_H4), Bars(_Symbol,PERIOD_D1),
-                  (UseTF_H4?BarsCalculated(zzH4):-1), (UseTF_D1?BarsCalculated(zzD1):-1));
+      PrintFormat("INIT+: H4=%d D1=%d",
+                  Bars(_Symbol,PERIOD_H4), Bars(_Symbol,PERIOD_D1));
 
    return(INIT_SUCCEEDED);
 }
