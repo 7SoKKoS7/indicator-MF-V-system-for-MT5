@@ -1153,6 +1153,19 @@ void DrawWarmupStatus(const bool okH1, const int haveH1, const int needH1,
    ObjectSetString(0, nm, OBJPROP_TEXT, txt);
 }
 
+// Полная очистка всех буферов стрелок
+void ClearAllArrowBuffers()
+{
+   ArrayInitialize(BuyArrowBuffer,   EMPTY_VALUE);
+   ArrayInitialize(SellArrowBuffer,  EMPTY_VALUE);
+   ArrayInitialize(EarlyBuyBuffer,   EMPTY_VALUE);
+   ArrayInitialize(EarlySellBuffer,  EMPTY_VALUE);
+   ArrayInitialize(ExitBuffer,       EMPTY_VALUE);
+   ArrayInitialize(ReverseBuffer,    EMPTY_VALUE);
+   ArrayInitialize(StrongBuyBuffer,  EMPTY_VALUE);
+   ArrayInitialize(StrongSellBuffer, EMPTY_VALUE);
+   ArrayInitialize(EarlyExitBuffer,  EMPTY_VALUE);
+}
 //+------------------------------------------------------------------+
 //| Draw single status row / Отрисовка строки статуса                |
 //+------------------------------------------------------------------+
@@ -1224,6 +1237,9 @@ int OnCalculate(const int rates_total,
    ArrayResize(StrongBuyBuffer,  rates_total);
    ArrayResize(StrongSellBuffer, rates_total);
 
+   // Жёстко очищаем буферы на каждом тике перед рисованием, чтобы не оставались артефакты
+   ClearAllArrowBuffers();
+
    // Инициализация буферов для текущего бара
    BuyArrowBuffer[0]   = EMPTY_VALUE;
    SellArrowBuffer[0]  = EMPTY_VALUE;
@@ -1236,25 +1252,16 @@ int OnCalculate(const int rates_total,
    EarlyExitBuffer[0]  = EMPTY_VALUE;
 
    // Ограничение глубины отрисовки стрелок, чтобы убрать «рандомные» хвосты на старой истории
-   int maxKeep = MathMax(50, MathMin(SignalsLookbackBars, rates_total-1));
-   for(int i=maxKeep+1; i<rates_total; ++i)
+   if(!ShowHistorySignals)
    {
-      if(!ShowHistorySignals)
+      // Исторические стрелки отключены — рисуем только на баре [1], остальное очищено выше
+   }
+   else
+   {
+      // Лимит по истории — всё, что дальше SignalsLookbackBars, оставляем пустым
+      int maxKeep = MathMax(50, MathMin(SignalsLookbackBars, rates_total-1));
+      for(int i=maxKeep+1; i<rates_total; ++i)
       {
-         // Если исторические стрелки отключены — чистим всё, кроме [1]
-         BuyArrowBuffer[i]   = EMPTY_VALUE;
-         SellArrowBuffer[i]  = EMPTY_VALUE;
-         EarlyBuyBuffer[i]   = EMPTY_VALUE;
-         EarlySellBuffer[i]  = EMPTY_VALUE;
-         ExitBuffer[i]       = EMPTY_VALUE;
-         ReverseBuffer[i]    = EMPTY_VALUE;
-         StrongBuyBuffer[i]  = EMPTY_VALUE;
-         StrongSellBuffer[i] = EMPTY_VALUE;
-         EarlyExitBuffer[i]  = EMPTY_VALUE;
-      }
-      else
-      {
-         // Показываем ограниченную историю, дальние стрелки скрываем
          BuyArrowBuffer[i]   = EMPTY_VALUE;
          SellArrowBuffer[i]  = EMPTY_VALUE;
          EarlyBuyBuffer[i]   = EMPTY_VALUE;
@@ -1679,7 +1686,7 @@ int OnCalculate(const int rates_total,
       }
    }
 
-   // Логика разворота
+   // Логика разворота (привязанная к текущему ТФ, рисуем только на закрытом баре)
    if(ShowReversalSignals && trendH1 == trendM15 && trendH1 != 0 && trendH1 != lastTrendH1 && lastTrendH1 != 0)
    {
       ReverseBuffer[1] = price[1];
