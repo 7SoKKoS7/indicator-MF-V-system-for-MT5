@@ -24,6 +24,11 @@ input bool   ShowStatusInfo = true;           // Показывать инфор
 input bool   EnableVolumeFilter = true;       // Фильтр по объему
 input bool   EnableSessionFilter = true;      // Фильтр торговых сессий
 
+input group "=== Пивоты High/Low и ТФ ==="
+input bool   ShowPivotHighLow = true;         // Рисовать Pivot High/Low на всех ТФ
+input bool   UseTF_H4 = false;                // Использовать H4 dual-pivot
+input bool   UseTF_D1 = false;                // Использовать D1 dual-pivot
+
 input group "=== Сессии ==="
 input int    SessionGMTOffset = 2;            // Смещение серверного времени относительно GMT (пример: 2 для GMT+2)
 
@@ -81,6 +86,8 @@ input color  StrongSignalColor = clrYellow;   // Цвет сильного си�
 input color  EarlyExitColor = clrSandyBrown;  // Цвет раннего выхода
 
 input group "=== Цвета линий Pivot ==="
+input color  PivotHighColor = clrRed;         // Цвет Pivot High (сопротивление)
+input color  PivotLowColor  = clrLime;        // Цвет Pivot Low  (поддержка)
 input color  PivotH1Color = clrBlue;          // Цвет H1 Pivot
 input color  PivotM15Color = clrGreen;        // Цвет M15 Pivot
 input color  PivotM5Color = clrOrange;        // Цвет M5 Pivot
@@ -159,6 +166,23 @@ struct ClinchStatus
 };
 
 enum SigClass { SigNone, SigEarly, SigNormal, SigStrong };
+
+// --- Dual-pivot per timeframe (High/Low) non-repainting cache
+struct TFPivots
+{
+   double   high;       // последний подтверждённый swing High (начал нисходящее колено)
+   datetime high_time;
+   double   low;        // последний подтверждённый swing Low (начал восходящее колено)
+   datetime low_time;
+   int      lastSwing;  // +1: последний подтверждённый Low (вверх), -1: High (вниз)
+};
+
+static TFPivots pivH1, pivM15, pivM5, pivH4, pivD1;
+static datetime pivotsLastUpdate = 0;
+static bool pivotsEverReady = false; // станет true, когда H1/M15/M5 получат оба уровня H/L
+
+// ZigZag handles per TF
+int zzH1 = INVALID_HANDLE, zzM15 = INVALID_HANDLE, zzM5 = INVALID_HANDLE, zzH4 = INVALID_HANDLE, zzD1 = INVALID_HANDLE;
 
 int CopyCloseH1(const int bars, double &buf[])
 {
@@ -261,17 +285,19 @@ bool IsFlatPhase_M15()
 
    return (med < FlatMedianThreshold);
 }
-bool CheckH1Breakout(const double pivotH1, const int dir)
+// Проверка закрепления H1 за соответствующим уровнем: для buy — PivotHigh_H1, для sell — PivotLow_H1
+bool CheckH1Breakout(const double pivotH1_H, const double pivotH1_L, const int dir)
 {
    // dir = +1 buy, -1 sell
    double c0 = iClose(_Symbol, PERIOD_H1, 1);
-   if(H1ClosesNeeded <= 1)
-      return (dir>0 ? c0>pivotH1 : c0<pivotH1);
+    if(H1ClosesNeeded <= 1)
+       return (dir>0 ? c0>pivotH1_H : c0<pivotH1_L);
    double c1 = iClose(_Symbol, PERIOD_H1, 2);
-   return (dir>0 ? (c0>pivotH1 && c1>pivotH1) : (c0<pivotH1 && c1<pivotH1));
+    return (dir>0 ? (c0>pivotH1_H && c1>pivotH1_H) : (c0<pivotH1_L && c1<pivotH1_L));
 }
 
-bool CheckRetestBounce_M15(const double pivotH1, const int dir, datetime fromTime)
+// Ретест уровня H1 на M15 с отскоком: для buy ретест PivotHigh_H1, для sell — PivotLow_H1
+bool CheckRetestBounce_M15(const double pivotH1Level, const int dir, datetime fromTime)
 {
    // Используем завершенные бары M15, не более 48
    // Правильный вызов ATR через хэндл и CopyBuffer
@@ -282,8 +308,8 @@ bool CheckRetestBounce_M15(const double pivotH1, const int dir, datetime fromTim
    if(CopyBuffer(atrHandle, 0, 1, 1, atrBuf) == 1)
       atr = atrBuf[0];
    if(atr<=0) return false;
-   double half = RetestTolATR_M15 * atr;
-   double top  = pivotH1 + half, bot = pivotH1 - half;
+    double half = RetestTolATR_M15 * atr;
+    double top  = pivotH1Level + half, bot = pivotH1Level - half;
 
    // Начинаем с конца закрытого H1-часа
    int shStart = iBarShift(_Symbol, PERIOD_M15, fromTime, false);
@@ -305,7 +331,7 @@ bool CheckRetestBounce_M15(const double pivotH1, const int dir, datetime fromTim
       double rangeBar = MathMax(h-l, _Point);
       double wick     = (dir>0 ? h-c : c-l);
       bool wickOk     = (rangeBar>0 ? (wick / rangeBar >= WickRejectMin) : false);
-      bool closeOk    = (dir>0 ? c>pivotH1 : c<pivotH1);
+       bool closeOk    = (dir>0 ? c>pivotH1Level : c<pivotH1Level);
 
       bool volOk = true;
       if(UseRetestVolume)
@@ -320,7 +346,7 @@ bool CheckRetestBounce_M15(const double pivotH1, const int dir, datetime fromTim
    return false;
 }
 
-bool CheckRetestBounce_M5(const double pivotH1, const int dir, datetime fromTime)
+bool CheckRetestBounce_M5(const double pivotH1Level, const int dir, datetime fromTime)
 {
    int shStart = iBarShift(_Symbol, PERIOD_M5, fromTime, false);
    int bars = MathMin(MathMax(RetestWindowM5, 1), 120);
@@ -328,8 +354,8 @@ bool CheckRetestBounce_M5(const double pivotH1, const int dir, datetime fromTime
    double aBuf[]; ArraySetAsSeries(aBuf, true);
    double atr = 0.0; if(atrHandle!=INVALID_HANDLE && CopyBuffer(atrHandle,0,1,1,aBuf)==1) atr=aBuf[0];
    if(atr<=0) return false;
-   double half = RetestTolATR_M5 * atr;
-   double top  = pivotH1 + half, bot = pivotH1 - half;
+    double half = RetestTolATR_M5 * atr;
+    double top  = pivotH1Level + half, bot = pivotH1Level - half;
    for(int i=shStart-1, seen=0; i>=1 && seen<bars; --i, ++seen)
    {
       datetime t = iTime(_Symbol, PERIOD_M5, i);
@@ -344,7 +370,7 @@ bool CheckRetestBounce_M5(const double pivotH1, const int dir, datetime fromTime
       double rangeBar = MathMax(h-l, _Point);
       double wick     = (dir>0 ? h-c : c-l);
       bool wickOk     = (rangeBar>0 ? (wick / rangeBar >= WickRejectMin) : false);
-      bool closeOk    = (dir>0 ? c>pivotH1 : c<pivotH1);
+       bool closeOk    = (dir>0 ? c>pivotH1Level : c<pivotH1Level);
       bool volOk = true;
       if(UseRetestVolume)
       {
@@ -372,6 +398,124 @@ double GetATR_H1()
    if(CopyBuffer(atrH1Handle, 0, 1, 1, a) == 1) // закрытый бар
       return a[0];
    return lastAtrH1 > 0 ? lastAtrH1 : 0.0;
+}
+
+//+------------------------------------------------------------------+
+//| ZigZag access helpers and dual-pivot extraction                   |
+//+------------------------------------------------------------------+
+int GetZZHandle(const ENUM_TIMEFRAMES tf)
+{
+   switch(tf)
+   {
+      case PERIOD_H1:  return zzH1;
+      case PERIOD_M15: return zzM15;
+      case PERIOD_M5:  return zzM5;
+      case PERIOD_H4:  return zzH4;
+      case PERIOD_D1:  return zzD1;
+      default:         return INVALID_HANDLE;
+   }
+}
+
+// Сколько баров запрашивать для поиска последних подтверждённых H/L
+int GetScanBarsForTF(const ENUM_TIMEFRAMES tf)
+{
+   switch(tf)
+   {
+      case PERIOD_M5:  return 2000;  // ~7 дней
+      case PERIOD_M15: return 800;   // ~8-9 дней
+      case PERIOD_H1:  return 400;   // ~16-17 дней
+      case PERIOD_H4:  return 200;   // ~33 дней
+      case PERIOD_D1:  return 150;   // ~пару лет
+      default:         return 1000;
+   }
+}
+
+bool EnsureTFHistory(const ENUM_TIMEFRAMES tf, const int minBars)
+{
+   MqlRates tmp[]; ArraySetAsSeries(tmp, true);
+   int got = CopyRates(_Symbol, tf, 0, minBars, tmp);
+   return (got > 0);
+}
+
+// Читает ZigZag и обновляет подтверждённые High/Low для заданного ТФ.
+// Используются только закрытые бары (индексы >=1). Не затирает противоположную сторону.
+bool CalculatePivots(const ENUM_TIMEFRAMES tf, TFPivots &io)
+{
+   int h = GetZZHandle(tf);
+   if(h == INVALID_HANDLE) return false;
+
+   // Убедимся, что история подгружена минимум под наш скан
+   int scan = GetScanBarsForTF(tf);
+   EnsureTFHistory(tf, scan);
+   int bars = iBars(_Symbol, tf);
+   int cnt = MathMin(bars, scan);
+   if(cnt < InpDepth + 5) return false;
+
+   double bufHigh[], bufLow[]; ArraySetAsSeries(bufHigh, true); ArraySetAsSeries(bufLow, true);
+   // Стандартный ZigZag: буфер 1 — High, буфер 2 — Low
+   if(CopyBuffer(h, 1, 0, cnt, bufHigh) <= 0) return false;
+   if(CopyBuffer(h, 2, 0, cnt, bufLow)  <= 0) return false;
+
+   double lastHigh=0.0, lastLow=0.0; int shHigh=-1, shLow=-1;
+   for(int i=1; i<cnt; ++i) { double v=bufHigh[i]; if(v!=0.0 && v!=EMPTY_VALUE){ lastHigh=v; shHigh=i; break; } }
+   for(int i=1; i<cnt; ++i) { double v=bufLow[i];  if(v!=0.0 && v!=EMPTY_VALUE){ lastLow =v; shLow =i; break; } }
+
+   bool updated=false;
+   // ATR-адаптация: требуем минимальную длину качели
+   if(AtrDeviationK > 0.0 && lastHigh>0.0 && lastLow>0.0)
+   {
+      int atrH = iATR(_Symbol, tf, 14);
+      double aBuf[]; ArraySetAsSeries(aBuf, true);
+      double atrTf = 0.0; if(atrH!=INVALID_HANDLE && CopyBuffer(atrH,0,1,1,aBuf)==1) atrTf=aBuf[0];
+      double thr = MathMax(InpDeviation*_Point, AtrDeviationK*atrTf);
+      if(MathAbs(lastHigh-lastLow) < thr) { /* не обновляем */ }
+   }
+
+   if(lastHigh>0.0 && shHigh>=1)
+   {
+      datetime t = iTime(_Symbol, tf, shHigh);
+      if(t > io.high_time){ io.high = lastHigh; io.high_time = t; updated=true; }
+   }
+   if(lastLow>0.0 && shLow>=1)
+   {
+      datetime t = iTime(_Symbol, tf, shLow);
+      if(t > io.low_time){ io.low = lastLow; io.low_time = t; updated=true; }
+   }
+
+   if(io.high_time==0 && io.low_time==0) return updated;
+   if(io.high_time >= io.low_time && io.high_time!=0) io.lastSwing = -1; else if(io.low_time > io.high_time && io.low_time!=0) io.lastSwing = +1;
+   return updated;
+}
+
+void UpdatePivotsCache()
+{
+   datetime now = TimeCurrent();
+   // До первой инициализации НЕ троттлим, чтобы уйти от "Waiting for data..." на минуту
+   if(pivotsEverReady && pivotsLastUpdate!=0 && (now - pivotsLastUpdate) <= 60) return;
+
+   bool u1 = CalculatePivots(PERIOD_H1,  pivH1);
+   bool u2 = CalculatePivots(PERIOD_M15, pivM15);
+   bool u3 = CalculatePivots(PERIOD_M5,  pivM5);
+   if(UseTF_H4) CalculatePivots(PERIOD_H4, pivH4);
+   if(UseTF_D1) CalculatePivots(PERIOD_D1, pivD1);
+
+   bool ok1 = (pivH1.high>0.0 && pivH1.low>0.0);
+   bool ok2 = (pivM15.high>0.0 && pivM15.low>0.0);
+   bool ok3 = (pivM5.high>0.0 && pivM5.low>0.0);
+   pivotsEverReady = (ok1 && ok2 && ok3) || pivotsEverReady || (u1||u2||u3);
+   // Фиксируем метку времени только когда хотя бы что-то обновили или всё готово
+   if(u1 || u2 || u3 || pivotsEverReady)
+      pivotsLastUpdate = now;
+}
+
+// Тренд по dual‑pivot: Up если Close[1] > PivotLow и последний swing=Up; Down если Close[1] < PivotHigh и swing=Down.
+int DetermineTrend(const TFPivots &p, const double close_t1, const double tol_param=0.0)
+{
+   if(p.high<=0.0 || p.low<=0.0) return 0;
+   double tol = (tol_param>0.0 ? tol_param : MathMax(2*_Point, (AtrDeviationK>0.0 ? 0.1*GetATR_H1() : 2*_Point)));
+   if(p.lastSwing==+1 && close_t1 > (p.low + tol))  return +1;
+   if(p.lastSwing== -1 && close_t1 < (p.high - tol)) return -1;
+   return 0;
 }
 
 // Handles for consensus filters
@@ -432,8 +576,9 @@ SigClass ApplyConsensus(SigClass sc, const int dir, const int emaDir, const bool
    if(Consensus == Cons_BlockAll) return SigNone;
    return sc;
 }
-ClinchStatus CalcClinchH1(const double pivotH1, const int lookback, const int flipsMin,
-                          const double rangeMaxATR, const double kATR)
+// Clinch по коридору [PivotLow_H1..PivotHigh_H1]
+ClinchStatus CalcClinchH1Band(const TFPivots &ph1, const int lookback, const int flipsMin,
+                              const double rangeMaxATR)
 {
    ClinchStatus cs; ZeroMemory(cs);
    cs.isClinch=false;
@@ -460,16 +605,18 @@ ClinchStatus CalcClinchH1(const double pivotH1, const int lookback, const int fl
    if(gotClose < 2) return cs;
    int useClose = MathMin(useBars, gotClose);
 
-   int flips = 0;
-   int prevSign = 0;
-   for(int i=useClose-1; i>=0; i--) // от старых к новым
-   {
-      double diff = c[i] - pivotH1;
-      int sgn = (diff > 0 ? 1 : (diff < 0 ? -1 : 0));
-      if(sgn == 0) continue;
-      if(prevSign == 0) prevSign = sgn;
-      else if(sgn != prevSign) { flips++; prevSign = sgn; }
-   }
+    double mid = 0.0;
+    if(ph1.high>0.0 && ph1.low>0.0) mid = 0.5*(ph1.high + ph1.low);
+    int flips = 0;
+    int prevSign = 0;
+    for(int i=useClose-1; i>=0; i--) // от старых к новым
+    {
+       double diff = c[i] - mid;
+       int sgn = (diff > 0 ? 1 : (diff < 0 ? -1 : 0));
+       if(sgn == 0) continue;
+       if(prevSign == 0) prevSign = sgn;
+       else if(sgn != prevSign) { flips++; prevSign = sgn; }
+    }
    cs.flips = flips;
 
    // Fallback: если ATR индикатора ещё ноль, при достаточной истории оцениваем ATR как средний True Range (period 14)
@@ -488,10 +635,9 @@ ClinchStatus CalcClinchH1(const double pivotH1, const int lookback, const int fl
       cs.atr = sumTR / 14.0;
    }
 
-   // Зона вокруг pivot и факт касания ценой за Lookback
-   double half = kATR * cs.atr;
-   cs.zoneTop = pivotH1 + half;
-   cs.zoneBot = pivotH1 - half;
+    // Коридор клинча — между последними подтверждёнными Low/High на H1
+    cs.zoneTop = ph1.high;
+    cs.zoneBot = ph1.low;
    if(cs.zoneTop < cs.zoneBot){ double t=cs.zoneTop; cs.zoneTop=cs.zoneBot; cs.zoneBot=t; }
    for(int i=0;i<useBars;i++)
    {
@@ -514,11 +660,9 @@ ClinchStatus CalcClinchH1(const double pivotH1, const int lookback, const int fl
 
 void DrawClinchZone(const string name, const ClinchStatus &cs, const double pivotH1, const bool isClinch)
 {
-   // Нормализуем границы цены
-   double baseAtr = (cs.atr>0.0 ? cs.atr : GetATR_H1());
-   double half = ClinchAtrK * baseAtr;
-   double top  = pivotH1 + half;
-   double bot  = pivotH1 - half;
+    // Перерисуем как коридор High/Low, но для обратной совместимости оставим имя
+    double top  = cs.zoneTop;
+    double bot  = cs.zoneBot;
    if(top < bot){ double t=top; top=bot; bot=t; }
 
    // Границы по времени
@@ -540,7 +684,7 @@ void DrawClinchZone(const string name, const ClinchStatus &cs, const double pivo
    ObjectSetInteger(0, name, OBJPROP_STYLE,  STYLE_DOT);
    ObjectSetInteger(0, name, OBJPROP_WIDTH,  1);
    ObjectSetInteger(0, name, OBJPROP_ZORDER, 0);
-   ObjectSetInteger(0, name, OBJPROP_COLOR,  isClinch ? clrPaleTurquoise : clrAliceBlue);
+    ObjectSetInteger(0, name, OBJPROP_COLOR,  isClinch ? clrPaleTurquoise : clrAliceBlue);
 }
 
 SigClass ApplyClinch(const SigClass s, const bool clinch)
@@ -551,9 +695,7 @@ SigClass ApplyClinch(const SigClass s, const bool clinch)
    return SigNone; // SigEarly -> блок
 }
 
-//--- For new levels on H4 and D1 / Для H4 и D1 новых уровней
-double mfPivotH4;
-double mfPivotD1;
+//--- Dual-pivot используется для H4/D1 при включённых флагах UseTF_H4/UseTF_D1
 
 //--- Classic Pivot levels / Классические уровни Pivot
 double pivotLevel, r1Level, r2Level, s1Level, s2Level;
@@ -565,15 +707,7 @@ string objR2    = "MF_ClassicR2";
 string objS1    = "MF_ClassicS1";
 string objS2    = "MF_ClassicS2";
 
-//--- Кэш для оптимизации
-struct PivotCache
-{
-   double h1, m15, m5, h4, d1;
-   datetime lastUpdate;
-   bool isValid;
-};
-
-static PivotCache pivotCache;
+// (устаревший кэш одинарного pivot удалён)
 
 //--- Структура для анализа тренда MasterForex-V
 struct TrendAnalysis
@@ -740,9 +874,13 @@ int OnInit()
       return(INIT_FAILED);
    PlotIndexSetInteger(8, PLOT_LINE_COLOR, EarlyExitColor);
 
-   // Инициализация кэша
-   pivotCache.isValid = false;
-   pivotCache.lastUpdate = 0;
+   // Инициализация ZigZag per TF (built-in)
+   zzH1  = iCustom(_Symbol, PERIOD_H1,  "ZigZag", InpDepth, InpDeviation, 3);
+   zzM15 = iCustom(_Symbol, PERIOD_M15, "ZigZag", InpDepth, InpDeviation, 3);
+   zzM5  = iCustom(_Symbol, PERIOD_M5,  "ZigZag", InpDepth, InpDeviation, 3);
+   if(UseTF_H4) zzH4 = iCustom(_Symbol, PERIOD_H4, "ZigZag", InpDepth, InpDeviation, 3);
+   if(UseTF_D1) zzD1 = iCustom(_Symbol, PERIOD_D1, "ZigZag", InpDepth, InpDeviation, 3);
+   pivotsLastUpdate = 0;
 
     // Инициализация фильтров консенсуса
     ema50H  = iMA(_Symbol, PERIOD_M15, EmaFast, 0, MODE_EMA, PRICE_CLOSE);
@@ -779,12 +917,17 @@ void OnDeinit(const int reason)
       ObjectDelete(0, objS2);
    }
 
-   // Удаление линий и зон, созданных индикатором
-   ObjectDelete(0, "MF_PIVOT_H1");
-   ObjectDelete(0, "MF_PIVOT_M15");
-   ObjectDelete(0, "MF_PIVOT_M5");
-   ObjectDelete(0, "MF_PIVOT_H4");
-   ObjectDelete(0, "MF_PIVOT_D1");
+   // Удаление линий и зон, созданных индикатором (dual‑pivot)
+   ObjectDelete(0, "PivotH1_H");
+   ObjectDelete(0, "PivotH1_L");
+   ObjectDelete(0, "PivotM15_H");
+   ObjectDelete(0, "PivotM15_L");
+   ObjectDelete(0, "PivotM5_H");
+   ObjectDelete(0, "PivotM5_L");
+   ObjectDelete(0, "PivotH4_H");
+   ObjectDelete(0, "PivotH4_L");
+   ObjectDelete(0, "PivotD1_H");
+   ObjectDelete(0, "PivotD1_L");
    ObjectDelete(0, "H1_CLINCH_ZONE");
    ObjectDelete(0, objPivot);
    ObjectDelete(0, objR1);
@@ -801,117 +944,14 @@ void OnDeinit(const int reason)
    if(ema50H      != INVALID_HANDLE) { IndicatorRelease(ema50H);      ema50H      = INVALID_HANDLE; }
    if(ema200H     != INVALID_HANDLE) { IndicatorRelease(ema200H);     ema200H     = INVALID_HANDLE; }
    if(rsiH        != INVALID_HANDLE) { IndicatorRelease(rsiH);        rsiH        = INVALID_HANDLE; }
+   if(zzH1        != INVALID_HANDLE) { IndicatorRelease(zzH1);        zzH1        = INVALID_HANDLE; }
+   if(zzM15       != INVALID_HANDLE) { IndicatorRelease(zzM15);       zzM15       = INVALID_HANDLE; }
+   if(zzM5        != INVALID_HANDLE) { IndicatorRelease(zzM5);        zzM5        = INVALID_HANDLE; }
+   if(zzH4        != INVALID_HANDLE) { IndicatorRelease(zzH4);        zzH4        = INVALID_HANDLE; }
+   if(zzD1        != INVALID_HANDLE) { IndicatorRelease(zzD1);        zzD1        = INVALID_HANDLE; }
 }
 
-//+------------------------------------------------------------------+
-//| Retrieve last ZigZag extremum (MF-pivot) - оптимизированная версия |
-//+------------------------------------------------------------------+
-double GetLastPivot(string symbol, ENUM_TIMEFRAMES tf)
-{
-   int bars = iBars(symbol, tf);
-   if(bars < InpDepth + 2)
-      return 0.0;
-
-   int count = MathMin(bars, 300);
-   double close[];
-   // Исключаем текущий незакрытый бар из ZigZag
-   if(CopyClose(symbol, tf, 1, count, close) <= 0)
-      return 0.0;
-   ArraySetAsSeries(close, true);
-   if(count < 3) return 0.0; // защита от выхода за пределы массива
-
-   // ATR-адаптация порога ZigZag: deviation = max(InpDeviation*_Point, AtrDeviationK * ATR(tf))
-   double deviation = InpDeviation * _Point;
-   if(AtrDeviationK > 0.0)
-   {
-      int atrHandleTf = iATR(symbol, tf, 14);
-      if(atrHandleTf != INVALID_HANDLE)
-      {
-         double atrBuf[]; ArraySetAsSeries(atrBuf, true);
-         if(CopyBuffer(atrHandleTf, 0, 1, 1, atrBuf) == 1)
-         {
-            double atrDev = AtrDeviationK * atrBuf[0];
-            if(atrDev > deviation) deviation = atrDev;
-         }
-      }
-   }
-    double last_pivot_price = close[count-1];
-    int    last_pivot_index = count-1;     // индекс последнего кандидата в пивот
-    int    direction = 0;                   // 0 — не определено, 1 — ищем максимум, -1 — ищем минимум
-    const int minDistance = MathMax(1, InpDepth); // минимальная дистанция между пивотами
-    double confirmed_pivot = 0.0;           // только подтвержденный экстремум
-
-   // Ищем ближайший к текущему подтвержденный экстремум, игнорируя кандидатов
-   for(int i = count-2; i >= 1; --i) // не заходим на i==0 (текущий бар)
-   {
-      double price_i = close[i];
-      if(direction == 0)
-      {
-         if(MathAbs(price_i - last_pivot_price) > deviation)
-         {
-            direction = (price_i > last_pivot_price) ? 1 : -1;
-            last_pivot_price = price_i;
-            last_pivot_index = i;
-         }
-      }
-      else if(direction == 1)
-      {
-         if(price_i > last_pivot_price)
-         {
-            last_pivot_price = price_i;
-            last_pivot_index = i;
-         }
-         else if((last_pivot_price - price_i) > deviation && (last_pivot_index - i) >= minDistance)
-         {
-            confirmed_pivot = last_pivot_price;
-            break;
-         }
-      }
-      else // direction == -1
-      {
-         if(price_i < last_pivot_price)
-         {
-            last_pivot_price = price_i;
-            last_pivot_index = i;
-         }
-         else if((price_i - last_pivot_price) > deviation && (last_pivot_index - i) >= minDistance)
-         {
-            confirmed_pivot = last_pivot_price;
-            break;
-         }
-      }
-   }
-   // Возвращаем только подтвержденный экстремум; если его нет в окне поиска — 0.0 (ждём подтверждения)
-   return confirmed_pivot;
-}
-
-//+------------------------------------------------------------------+
-//| Get cached pivot values / Получение кэшированных значений pivot |
-//+------------------------------------------------------------------+
-void UpdatePivotCache()
-{
-   datetime currentTime = TimeCurrent();
-   
-   // Обновляем кэш только если прошло достаточно времени или он недействителен
-   if(!pivotCache.isValid || (currentTime - pivotCache.lastUpdate) > 60)
-   {
-      double n_h1  = GetLastPivot(_Symbol, PERIOD_H1);
-      double n_m15 = GetLastPivot(_Symbol, PERIOD_M15);
-      double n_m5  = GetLastPivot(_Symbol, PERIOD_M5);
-      double n_h4  = GetLastPivot(_Symbol, PERIOD_H4);
-      double n_d1  = GetLastPivot(_Symbol, PERIOD_D1);
-
-      // Не затираем валидные значения нулями (пока новый экстремум не подтвержден)
-      if(n_h1  > 0.0) pivotCache.h1  = n_h1;
-      if(n_m15 > 0.0) pivotCache.m15 = n_m15;
-      if(n_m5  > 0.0) pivotCache.m5  = n_m5;
-      if(n_h4  > 0.0) pivotCache.h4  = n_h4;
-      if(n_d1  > 0.0) pivotCache.d1  = n_d1;
-      
-      pivotCache.lastUpdate = currentTime;
-      pivotCache.isValid = true;
-   }
-}
+// (legacy single-pivot functions removed — using dual-pivot via ZigZag buffers)
 
 //+------------------------------------------------------------------+
 //| Determine trend / Определение тренда                              |
@@ -1030,30 +1070,37 @@ int OnCalculate(const int rates_total,
    static double lastExitPivot       = 0.0; // выбранный уровень выхода для режимов Exit_H1/EntryTF/Nearest
    static bool   earlyExitShown      = false; // чтобы ранний выход рисовался один раз на позицию
 
-   // Обновление кэша pivot значений
-   UpdatePivotCache();
+   // Обновление dual‑pivot значений
+   UpdatePivotsCache();
    
-   // Получение значений pivot из кэша
-   double pivotH1  = pivotCache.h1;
-   double pivotM15 = pivotCache.m15;
-   double pivotM5  = pivotCache.m5;
-   mfPivotH4 = pivotCache.h4;
-   mfPivotD1 = pivotCache.d1;
+   // Используем значения dual‑pivot напрямую из кэша
 
    // Проверка доступности pivot значений
-   if(pivotH1 == 0.0 || pivotM15 == 0.0 || pivotM5 == 0.0)
+   if(pivH1.high==0.0 || pivH1.low==0.0 || pivM15.high==0.0 || pivM15.low==0.0 || pivM5.high==0.0 || pivM5.low==0.0)
    {
       if(ShowStatusInfo)
-         DrawRowLabel("MFV_STATUS_TREND", UseRussian ? "Ожидание данных..." : "Waiting for data...", 10);
+      {
+         string waitTxt = UseRussian ? "Ожидание данных..." : "Waiting for data...";
+         string hint = UseRussian ? " (H1~400, M15~800, M5~2000 баров)" : " (H1~400, M15~800, M5~2000 bars)";
+         DrawRowLabel("MFV_STATUS_TREND", waitTxt + hint, 10);
+      }
+      // Ускоряем первичную инициализацию: запросим целевые объёмы истории явно
+      EnsureTFHistory(PERIOD_H1,  GetScanBarsForTF(PERIOD_H1));
+      EnsureTFHistory(PERIOD_M15, GetScanBarsForTF(PERIOD_M15));
+      EnsureTFHistory(PERIOD_M5,  GetScanBarsForTF(PERIOD_M5));
       return(rates_total);
    }
 
    // Определение трендов
-   int trendH1  = GetTrend(price_prev, pivotH1);
-   int trendM15 = GetTrend(price_prev, pivotM15);
-   int trendM5  = GetTrend(price_prev, pivotM5);
-   int trendH4  = GetTrend(price_prev, mfPivotH4);
-   int trendD1  = GetTrend(price_prev, mfPivotD1);
+   double cH1  = iClose(_Symbol, PERIOD_H1, 1);
+   double cM15 = iClose(_Symbol, PERIOD_M15, 1);
+   double cM5  = iClose(_Symbol, PERIOD_M5, 1);
+   int trendH1  = DetermineTrend(pivH1,  cH1);
+   int trendM15 = DetermineTrend(pivM15, cM15);
+   int trendM5  = DetermineTrend(pivM5,  cM5);
+   int trendH4  = 0, trendD1=0;
+   if(UseTF_H4){ double cH4 = iClose(_Symbol, PERIOD_H4, 1); trendH4 = DetermineTrend(pivH4, cH4); }
+   if(UseTF_D1){ double cD1 = iClose(_Symbol, PERIOD_D1, 1); trendD1 = DetermineTrend(pivD1, cD1); }
 
    // Анализ MasterForex-V
    TrendAnalysis analysis;
@@ -1078,12 +1125,11 @@ int OnCalculate(const int rates_total,
                                 : "Trend H1: %s  M15: %s  M5: %s";
    string trendStatus = StringFormat(trendFmt, strH1, strM15, strM5);
 
-   string pivotWord = UseRussian ? "Пивот" : "Pivot";
-   string levelM5  = StringFormat("%s M5: %s",  pivotWord, DoubleToString(pivotM5,  _Digits));
-   string levelM15 = StringFormat("%s M15: %s", pivotWord, DoubleToString(pivotM15, _Digits));
-   string levelH1  = StringFormat("%s H1: %s",  pivotWord, DoubleToString(pivotH1,  _Digits));
-   string levelH4  = StringFormat("%s H4: %s",  pivotWord, DoubleToString(mfPivotH4,_Digits));
-   string levelD1  = StringFormat("%s D1: %s",  pivotWord, DoubleToString(mfPivotD1,_Digits));
+   string levelM5  = StringFormat("Pivot M5: H=%s | L=%s",  DoubleToString(pivM5.high,  _Digits), DoubleToString(pivM5.low,  _Digits));
+   string levelM15 = StringFormat("Pivot M15: H=%s | L=%s", DoubleToString(pivM15.high, _Digits), DoubleToString(pivM15.low, _Digits));
+   string levelH1  = StringFormat("Pivot H1: H=%s | L=%s",  DoubleToString(pivH1.high,  _Digits), DoubleToString(pivH1.low,  _Digits));
+   string levelH4  = UseTF_H4 ? StringFormat("Pivot H4: H=%s | L=%s",  DoubleToString(pivH4.high,  _Digits), DoubleToString(pivH4.low,  _Digits)) : "";
+   string levelD1  = UseTF_D1 ? StringFormat("Pivot D1: H=%s | L=%s",  DoubleToString(pivD1.high,  _Digits), DoubleToString(pivD1.low,  _Digits)) : "";
 
    // Дополнительная информация MasterForex-V
    string strengthText = UseRussian ? 
@@ -1126,23 +1172,24 @@ int OnCalculate(const int rates_total,
    // Детектор фазы рынка (флет): даунгрейд классов до Early
    bool isFlat = IsFlatPhase_M15();
 
-   // Расчет CLINCH по pivotH1 (не чаще 1 H1-бара). Обеспечиваем историю H1 на любом ТФ
+   // Расчет CLINCH по коридору [PivotLow_H1..PivotHigh_H1] (не чаще 1 H1-бара)
    static ClinchStatus clinchState;
    EnsureH1History(MathMax(ClinchLookbackH1 + 20, 100));
    datetime lastH1Bar = iTime(_Symbol, PERIOD_H1, 0);
    if(UseClinchFilter && (lastClinchCalcOnH1 == 0 || lastH1Bar == 0 || lastH1Bar != lastClinchCalcOnH1))
    {
-      clinchState = CalcClinchH1(pivotH1, ClinchLookbackH1, ClinchFlipsMin,
-                                 ClinchRangeMaxATR, ClinchAtrK);
+      clinchState = CalcClinchH1Band(pivH1, ClinchLookbackH1, ClinchFlipsMin,
+                                     ClinchRangeMaxATR);
       lastClinchCalcOnH1 = (lastH1Bar == 0 ? TimeCurrent() : lastH1Bar);
       // Отрисовываем зону, если отключен фильтр показа или если зона была потрогана ценой
       if(!ShowClinchZoneOnlyIfTouched || clinchState.touched)
-         DrawClinchZone("H1_CLINCH_ZONE", clinchState, pivotH1, clinchState.isClinch);
+         DrawClinchZone("H1_CLINCH_ZONE", clinchState, 0.0, clinchState.isClinch);
       else
          ObjectDelete(0, "H1_CLINCH_ZONE");
    }
 
-   if(trendH1 == 1 && trendM15 == 1 && trendM5 == 1 && canTrade)
+   // Для Long: дополнительно требуем, чтобы M5 пробил свой PivotHigh_M5 и был pullback (обеспечивается фильтрами подтверждения/импульса)
+   if(trendH1 == 1 && trendM15 == 1 && trendM5 == 1 && (cM5 > pivM5.high) && canTrade)
    {
       SigClass sc = (analysis.strength >= 3) ? SigStrong : SigNormal;
       sc = ApplyClinch(sc, UseClinchFilter ? clinchState.isClinch : false);
@@ -1157,11 +1204,11 @@ int OnCalculate(const int rates_total,
             (BreakoutConfirm==Confirm_StrongAndNormal && (sc==SigStrong || sc==SigNormal));
          if(needConfirm && !clinchState.isClinch)
          {
-            bool okH1  = CheckH1Breakout(pivotH1, dir);
+             bool okH1  = CheckH1Breakout(pivH1.high, pivH1.low, dir);
           datetime h1_open = iTime(_Symbol, PERIOD_H1, 1);
           datetime fromTime = h1_open + PeriodSeconds(PERIOD_H1);
-            bool okRetM15 = CheckRetestBounce_M15(pivotH1, dir, fromTime);
-            bool okRetM5  = (RetestAllowM5 ? CheckRetestBounce_M5(pivotH1, dir, fromTime) : false);
+             bool okRetM15 = CheckRetestBounce_M15(pivH1.high, dir, fromTime);
+             bool okRetM5  = (RetestAllowM5 ? CheckRetestBounce_M5(pivH1.high, dir, fromTime) : false);
             bool okRet = (okRetM15 || okRetM5);
             bool okBoth = okH1 && okRet;
             if(sc==SigStrong && !okBoth)        sc = SigNormal;
@@ -1207,9 +1254,9 @@ int OnCalculate(const int rates_total,
        lastSignal = 1;
        earlyExitShown = false; // новая позиция — сбрасываем флаг раннего выхода
        // Зафиксировать уровни на момент входа
-       lastPivotH1AtEntry  = pivotH1;
-       lastPivotM15AtEntry = pivotM15;
-       lastPivotM5AtEntry  = pivotM5;
+       lastPivotH1AtEntry  = pivH1.low;   // Long: выходим по пробою PivotLow_H1
+       lastPivotM15AtEntry = pivM15.low;  // Soft: PivotLow_M15
+       lastPivotM5AtEntry  = pivM5.low;
        // Выбрать целевой уровень выхода в зависимости от режима
        if(ExitLogic == Exit_H1)
        {
@@ -1242,7 +1289,7 @@ int OnCalculate(const int rates_total,
        // legacy совместимость
        lastPivot = lastPivotH1AtEntry;
    }
-   else if(trendH1 == -1 && trendM15 == -1 && trendM5 == -1 && canTrade)
+   else if(trendH1 == -1 && trendM15 == -1 && trendM5 == -1 && (cM5 < pivM5.low) && canTrade)
    {
       SigClass sc = (analysis.strength >= 3) ? SigStrong : SigNormal;
       sc = ApplyClinch(sc, UseClinchFilter ? clinchState.isClinch : false);
@@ -1257,11 +1304,11 @@ int OnCalculate(const int rates_total,
             (BreakoutConfirm==Confirm_StrongAndNormal && (sc==SigStrong || sc==SigNormal));
          if(needConfirm && !clinchState.isClinch)
          {
-            bool okH1  = CheckH1Breakout(pivotH1, dir);
+            bool okH1  = CheckH1Breakout(pivH1.high, pivH1.low, dir);
           datetime h1_open2 = iTime(_Symbol, PERIOD_H1, 1);
           datetime fromTime2 = h1_open2 + PeriodSeconds(PERIOD_H1);
-          bool okRetM15b = CheckRetestBounce_M15(pivotH1, dir, fromTime2);
-          bool okRetM5b  = (RetestAllowM5 ? CheckRetestBounce_M5(pivotH1, dir, fromTime2) : false);
+          bool okRetM15b = CheckRetestBounce_M15(pivH1.low, dir, fromTime2);
+          bool okRetM5b  = (RetestAllowM5 ? CheckRetestBounce_M5(pivH1.low, dir, fromTime2) : false);
           bool okRet = (okRetM15b || okRetM5b);
             bool okBoth = okH1 && okRet;
             if(sc==SigStrong && !okBoth)        sc = SigNormal;
@@ -1303,9 +1350,9 @@ int OnCalculate(const int rates_total,
       }
        lastSignal = -1;
        earlyExitShown = false; // новая позиция — сбрасываем флаг раннего выхода
-       lastPivotH1AtEntry  = pivotH1;
-       lastPivotM15AtEntry = pivotM15;
-       lastPivotM5AtEntry  = pivotM5;
+       lastPivotH1AtEntry  = pivH1.high;  // Short: выходим по пробою PivotHigh_H1
+       lastPivotM15AtEntry = pivM15.high; // Soft: PivotHigh_M15
+        lastPivotM5AtEntry  = pivM5.high;
        if(ExitLogic == Exit_H1)
        {
           lastExitPivot = lastPivotH1AtEntry;
@@ -1435,12 +1482,12 @@ int OnCalculate(const int rates_total,
    else if(firedReversal)  signalText = (UseRussian ? "Сигнал: Разворот" : "Signal: Reversal");
    DrawRowLabel("MFV_STATUS_SIGNAL", signalText, 190);
 
-   // Статус CLINCH (H1 pivot)
+   // Статус CLINCH (коридор H1 High/Low)
    double rangeAtr = (clinchState.atr > 0.0 ? (clinchState.range / clinchState.atr) : 0.0);
    string clinchOn = clinchState.isClinch ? (UseRussian ? "✓" : "✓") : (UseRussian ? "✗" : "✗");
    string clinchText = UseRussian ?
-      StringFormat("Схватка: %s, flips=%d, range=%.2f ATR, zone=±%.2f ATR", clinchOn, clinchState.flips, rangeAtr, ClinchAtrK) :
-      StringFormat("Clinch: %s, flips=%d, range=%.2f ATR, zone=±%.2f ATR", clinchOn, clinchState.flips, rangeAtr, ClinchAtrK);
+       StringFormat("Схватка: %s, flips=%d, range=%.2f ATR, band=H/L", clinchOn, clinchState.flips, rangeAtr) :
+       StringFormat("Clinch: %s, flips=%d, range=%.2f ATR, band=H/L", clinchOn, clinchState.flips, rangeAtr);
    DrawRowLabel("MFV_STATUS_CLINCH", clinchText, 210);
 
    // Фаза рынка (Flat/Trend) — строкой под Clinch
@@ -1472,14 +1519,18 @@ int OnCalculate(const int rates_total,
       DrawRowLabel("MFV_STATUS_CONS", consText, 250);
    }
 
-   // Отрисовка линий Pivot
-   DrawOrUpdateLine("MF_PIVOT_H1",  pivotH1,  PivotH1Color,     2);
-   DrawOrUpdateLine("MF_PIVOT_M15", pivotM15, PivotM15Color,    1);
-   DrawOrUpdateLine("MF_PIVOT_M5",  pivotM5,  PivotM5Color,     1);
-   DrawOrUpdateLine("MF_PIVOT_H4",  mfPivotH4, PivotH4Color,    1, STYLE_DASH);
-   DrawOrUpdateLine("MF_PIVOT_D1",  mfPivotD1, PivotD1Color,    1, STYLE_DASH);
+   // Отрисовка dual‑pivot линий (названия согласно ТЗ)
+   if(ShowPivotHighLow)
+   {
+      if(pivH1.high>0.0)  DrawOrUpdateLine("PivotH1_H",  pivH1.high,  PivotHighColor, 2, STYLE_DASHDOTDOT);
+      if(pivH1.low>0.0)   DrawOrUpdateLine("PivotH1_L",  pivH1.low,   PivotLowColor,  2, STYLE_DASHDOTDOT);
+      if(pivM15.high>0.0) DrawOrUpdateLine("PivotM15_H", pivM15.high, PivotHighColor, 1, STYLE_DASHDOTDOT);
+      if(pivM15.low>0.0)  DrawOrUpdateLine("PivotM15_L", pivM15.low,  PivotLowColor,  1, STYLE_DASHDOTDOT);
+      if(pivM5.high>0.0)  DrawOrUpdateLine("PivotM5_H",  pivM5.high,  PivotHighColor, 1, STYLE_DASHDOTDOT);
+      if(pivM5.low>0.0)   DrawOrUpdateLine("PivotM5_L",  pivM5.low,   PivotLowColor,  1, STYLE_DASHDOTDOT);
+   }
 
-   // Отрисовка классических уровней Pivot
+   // Отрисовка классических уровней Pivot (Daily) — как отдельная подсистема
    if(ShowClassicPivot)
    {
       CalculateClassicPivotLevels(_Symbol, PERIOD_D1);

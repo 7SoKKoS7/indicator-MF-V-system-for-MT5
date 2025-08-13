@@ -87,9 +87,20 @@ bool ApplyStopsIfMissing(const int dir, const double plannedSL, const double pla
    if(TakeProfitMode!=TP_None && tp>0.0 && (curTP<=0.0 || MathAbs(curTP-tp) > _Point)) needMod = true;
    if(!needMod) return true;
 
-   bool ok = trade.PositionModify(_Symbol, (sl>0.0?sl:curSL), (TakeProfitMode!=TP_None && tp>0.0?tp:curTP));
-   if(!ok) Print("[MFV EA] PositionModify to set SL/TP failed: ", _LastError);
-   return ok;
+   // При частых отказах брокера попробуем с дополнительным буфером
+   double pip = ((_Digits==5 || _Digits==3) ? 10.0*_Point : _Point);
+   double slTry = sl, tpTry = tp;
+   for(int step=0; step<3; ++step)
+   {
+      bool ok = trade.PositionModify(_Symbol, (slTry>0.0?slTry:curSL), (TakeProfitMode!=TP_None && tpTry>0.0?tpTry:curTP));
+      if(ok) return true;
+      // сдвигаем ещё дальше от рынка и ждём
+      if(dir>0){ if(slTry>0.0) slTry -= 2*pip; if(tpTry>0.0) tpTry += 2*pip; }
+      else     { if(slTry>0.0) slTry += 2*pip; if(tpTry>0.0) tpTry -= 2*pip; }
+      Sleep(50);
+   }
+   Print("[MFV EA] PositionModify failed after retries, last error=", _LastError);
+   return false;
 }
 
 //+------------------------------------------------------------------+
@@ -155,6 +166,12 @@ double GetMinStopDistance()
    long stops = 0;
    SymbolInfoInteger(_Symbol, SYMBOL_TRADE_STOPS_LEVEL, stops);
    double dist = (double)stops * _Point;
+   long freeze = 0;
+   if(SymbolInfoInteger(_Symbol, SYMBOL_TRADE_FREEZE_LEVEL, freeze))
+   {
+      double freezeDist = (double)freeze * _Point;
+      if(freezeDist > dist) dist = freezeDist;
+   }
    if(dist<=0.0)
    {
       // если брокер не даёт StopsLevel, используем настраиваемый минимум в пипсах
@@ -163,7 +180,7 @@ double GetMinStopDistance()
    }
    // всегда добавляем небольшой буфер сверх минимальной дистанции
    double pip = ((_Digits==5 || _Digits==3) ? 10.0*_Point : _Point);
-   return dist + (double)StopBufferPips * pip;
+   return dist + (double)StopBufferPips * pip + 0.5*_Point; // небольшой анти-округлительный зазор
 }
 
 void EnsureStopsMinDistance(const int dir, const double entry, double &sl, double &tp)
@@ -568,7 +585,15 @@ void OnTradeTransaction(const MqlTradeTransaction& trans,
    {
       if(PositionSelect(_Symbol) && (ulong)PositionGetInteger(POSITION_MAGIC)==Magic)
       {
-         if(trade.PositionModify(_Symbol, sl, tp)) break;
+         double slTry=sl, tpTry=tp;
+         // дополнительный сдвиг на случай отказа
+         if(!trade.PositionModify(_Symbol, slTry, tpTry))
+         {
+            double pip = ((_Digits==5 || _Digits==3) ? 10.0*_Point : _Point);
+            if(dir>0){ if(slTry>0.0) slTry -= 2*pip; if(tpTry>0.0) tpTry += 2*pip; }
+            else     { if(slTry>0.0) slTry += 2*pip; if(tpTry>0.0) tpTry -= 2*pip; }
+            trade.PositionModify(_Symbol, slTry, tpTry);
+         }
       }
       Sleep((uint)ForceSetStopsDelayMs);
    }
