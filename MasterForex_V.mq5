@@ -1179,8 +1179,12 @@ int OnInit()
    static bool backfillDisabled=false;
    bool backfillDonePersist = (GlobalVariableCheck(BackfillGVKey()) && GlobalVariableGet(BackfillGVKey())>0.5);
    if(backfillDonePersist) backfillDisabled = true;
+   // Если история отключена, не выполняем дорисовку и удаляем статус-лейбл
+   if(!ShowHistorySignals) backfillDisabled = true;
    if(BackfillOnAttach && !backfillDisabled)
       DrawBackfillStatus(UseRussian?"Дорисовка истории: очередь" : "Backfill: queued");
+   else
+      ObjectDelete(0, "MFV_BACKFILL");
 
    // Попытка загрузить кэш пивотов из глобальных переменных терминала (устойчивость при смене ТФ)
    if(LoadAllPivotsGV())
@@ -1382,6 +1386,64 @@ void ClearAllArrowBuffers()
    ArrayInitialize(StrongSellBuffer, EMPTY_VALUE);
    ArrayInitialize(EarlyExitBuffer,  EMPTY_VALUE);
 }
+
+// Обрезает историю сигналов: оставляет только последние keepTotal события (по всем буферам сразу)
+void PruneAllSignalsToLastN(const int rates_total, const int keepTotal)
+{
+    // Ничего не делаем, если история не задана или недостаточно баров
+    if(rates_total <= 2) return;
+
+    // Если нужно скрыть всё, просто очищаем историю
+    if(keepTotal <= 0)
+    {
+        for(int i=1; i<rates_total; ++i)
+        {
+            BuyArrowBuffer[i]   = EMPTY_VALUE;
+            SellArrowBuffer[i]  = EMPTY_VALUE;
+            EarlyBuyBuffer[i]   = EMPTY_VALUE;
+            EarlySellBuffer[i]  = EMPTY_VALUE;
+            ExitBuffer[i]       = EMPTY_VALUE;
+            ReverseBuffer[i]    = EMPTY_VALUE;
+            StrongBuyBuffer[i]  = EMPTY_VALUE;
+            StrongSellBuffer[i] = EMPTY_VALUE;
+            EarlyExitBuffer[i]  = EMPTY_VALUE;
+        }
+        return;
+    }
+
+    int kept = 0;
+    // Проходим от самых свежих закрытых баров (индекс 1) к старым
+    for(int i=1; i<rates_total; ++i)
+    {
+        bool has = (BuyArrowBuffer[i]   != EMPTY_VALUE) ||
+                   (SellArrowBuffer[i]  != EMPTY_VALUE) ||
+                   (EarlyBuyBuffer[i]   != EMPTY_VALUE) ||
+                   (EarlySellBuffer[i]  != EMPTY_VALUE) ||
+                   (ExitBuffer[i]       != EMPTY_VALUE) ||
+                   (ReverseBuffer[i]    != EMPTY_VALUE) ||
+                   (StrongBuyBuffer[i]  != EMPTY_VALUE) ||
+                   (StrongSellBuffer[i] != EMPTY_VALUE) ||
+                   (EarlyExitBuffer[i]  != EMPTY_VALUE);
+
+        if(has)
+        {
+            kept++;
+            if(kept > keepTotal)
+            {
+                // Удаляем все сигналы на данном (более старом) баре
+                BuyArrowBuffer[i]   = EMPTY_VALUE;
+                SellArrowBuffer[i]  = EMPTY_VALUE;
+                EarlyBuyBuffer[i]   = EMPTY_VALUE;
+                EarlySellBuffer[i]  = EMPTY_VALUE;
+                ExitBuffer[i]       = EMPTY_VALUE;
+                ReverseBuffer[i]    = EMPTY_VALUE;
+                StrongBuyBuffer[i]  = EMPTY_VALUE;
+                StrongSellBuffer[i] = EMPTY_VALUE;
+                EarlyExitBuffer[i]  = EMPTY_VALUE;
+            }
+        }
+    }
+}
 //+------------------------------------------------------------------+
 //| Draw single status row / Отрисовка строки статуса                |
 //+------------------------------------------------------------------+
@@ -1476,7 +1538,7 @@ int OnCalculate(const int rates_total,
    // Фоновая дорисовка истории: полноценно пересчитываем по закрытым барам с той же логикой
    static int backfillDoneTF = 0; // битовая маска: 1=M5,2=M15,4=H1
    static bool backfillFinished = false;
-   if(BackfillOnAttach && !backfillFinished)
+   if(BackfillOnAttach && !backfillFinished && ShowHistorySignals)
    {
       PivotSeries ps5, ps15, psH1; ZeroMemory(ps5); ZeroMemory(ps15); ZeroMemory(psH1);
       int t5  = MathMax(0, MathMin(BackfillBarsM5,  iBars(_Symbol, PERIOD_M5)-2));
@@ -1517,13 +1579,17 @@ int OnCalculate(const int rates_total,
       int todoH1 = tH1 - progH1; if(todoH1>0) todoH1 = MathMin(todoH1, MathMax(1,step/12));
       if(todoH1<=0) backfillDoneTF |= 4;
 
-      string st = StringFormat("Backfill: M5 %d/%d  M15 %d/%d  H1 %d/%d", prog5, t5, prog15, t15, progH1, tH1);
-      DrawBackfillStatus(st);
+       if(ShowHistorySignals)
+       {
+          string st = StringFormat("Backfill: M5 %d/%d  M15 %d/%d  H1 %d/%d", prog5, t5, prog15, t15, progH1, tH1);
+          DrawBackfillStatus(st);
+       }
 
       if(prog5>=t5) backfillDoneTF |= 1;
       if( ((backfillDoneTF & 1)!=0) && ((backfillDoneTF & 2)!=0) && ((backfillDoneTF & 4)!=0) )
       {
-         DrawBackfillStatus(UseRussian?"Дорисовка истории: завершено" : "Backfill: done");
+          if(ShowHistorySignals)
+             DrawBackfillStatus(UseRussian?"Дорисовка истории: завершено" : "Backfill: done");
          backfillFinished = true; // завершаем локально, не трогаем input
       }
    }
@@ -2064,6 +2130,13 @@ int OnCalculate(const int rates_total,
       DrawOrUpdateLine(objR2,    r2Level,    clrDodgerBlue, 1, STYLE_DOT);
       DrawOrUpdateLine(objS1,    s1Level,    clrOrange,     1, STYLE_DOT);
       DrawOrUpdateLine(objS2,    s2Level,    clrOrange,     1, STYLE_DOT);
+   }
+
+   // Если история отключена, ограничиваем количество отображаемых сигналов последними событиями
+   if(!ShowHistorySignals)
+   {
+       // По умолчанию оставляем только последнее событие среди всех типов сигналов
+       PruneAllSignalsToLastN(rates_total, 1);
    }
 
    return(rates_total);
