@@ -518,6 +518,11 @@ double RoundTo(const double v, const int digits)
    return (digits>=0 ? NormalizeDouble(v, digits) : v);
 }
 
+string NOISE_LABEL()
+{
+   return "MFV_NOISE_LABEL_" + IntegerToString(ChartID());
+}
+
 bool IsBreakoutConfirmed(double level, int direction, ENUM_TIMEFRAMES tf, double atrMult, int minCloseBars, double noiseMultM15, double noiseMultH1)
 {
    if(direction == 0 || level <= 0.0 || minCloseBars <= 0) return false;
