@@ -506,11 +506,15 @@ double GetATR(ENUM_TIMEFRAMES tf, int period)
 // --- Pips/points helpers (consistent units)
 double ToPips(const double priceDelta)
 {
-   return (_Point > 0.0 ? priceDelta / _Point : 0.0);
+   // Convert price delta to standard FX pips (4-digit for majors).
+   // On 5/3-digit symbols 1 pip = 10 points; on 4/2-digit symbols 1 pip = 1 point.
+   double pip = (_Digits==5 || _Digits==3) ? (10.0*_Point) : _Point;
+   return (_Point > 0.0 ? priceDelta / pip : 0.0);
 }
 double FromPips(const double pips)
 {
-   return pips * _Point;
+   double pip = (_Digits==5 || _Digits==3) ? (10.0*_Point) : _Point;
+   return pips * pip;
 }
 
 double RoundTo(const double v, const int digits)
@@ -2315,6 +2319,23 @@ int OnCalculate(const int rates_total,
    ArrayResize(StrongBuyBuffer,  rates_total);
    ArrayResize(StrongSellBuffer, rates_total);
 
+   // Полная инициализация буферов на первом запуске, чтобы не было «исторических» стрелок
+   if(prev_calculated == 0)
+   {
+      for(int i=0; i<rates_total; ++i)
+      {
+         BuyArrowBuffer[i]   = EMPTY_VALUE;
+         SellArrowBuffer[i]  = EMPTY_VALUE;
+         EarlyBuyBuffer[i]   = EMPTY_VALUE;
+         EarlySellBuffer[i]  = EMPTY_VALUE;
+         ExitBuffer[i]       = EMPTY_VALUE;
+         ReverseBuffer[i]    = EMPTY_VALUE;
+         StrongBuyBuffer[i]  = EMPTY_VALUE;
+         StrongSellBuffer[i] = EMPTY_VALUE;
+         EarlyExitBuffer[i]  = EMPTY_VALUE;
+      }
+   }
+
    // Очищаем только текущий бар; история сохраняется
    BuyArrowBuffer[0] = SellArrowBuffer[0] = EarlyBuyBuffer[0] = EarlySellBuffer[0] =
       ExitBuffer[0] = ReverseBuffer[0] = StrongBuyBuffer[0] = StrongSellBuffer[0] = EarlyExitBuffer[0] = EMPTY_VALUE;
@@ -2377,6 +2398,15 @@ int OnCalculate(const int rates_total,
    static int    lastArrowBarSell    = -10000;
    static int    lastArrowBarEarlyB  = -10000;
    static int    lastArrowBarEarlyS  = -10000;
+
+   // Сброс внутренних счетчиков на первом запуске
+   if(prev_calculated == 0)
+   {
+      lastSignal = 0;
+      earlyExitShown = false;
+      lastArrowBarBuy = lastArrowBarSell = -10000;
+      lastArrowBarEarlyB = lastArrowBarEarlyS = -10000;
+   }
 
    // Обновление dual‑pivot значений через ZigZag‑хэндлы только при появлении нового свинга
    {
@@ -3170,12 +3200,27 @@ int OnCalculate(const int rates_total,
 bool GetATRsAndNoise(double &atrM15, double &atrH1, double &noise)
 {
    atrM15 = 0.0; atrH1 = 0.0; noise = 0.0;
-   if(hATR_M15 == INVALID_HANDLE || hATR_H1 == INVALID_HANDLE) return false;
+   // Ленивая ре-инициализация хэндлов при необходимости
+   if(hATR_M15 == INVALID_HANDLE) hATR_M15 = iATR(_Symbol, PERIOD_M15, ATR_Period_M15);
+   if(hATR_H1  == INVALID_HANDLE) hATR_H1  = iATR(_Symbol, PERIOD_H1,  ATR_Period_H1);
+
+   // Минимальный прогрев историй для устойчивого CopyBuffer
+   EnsureHistory(_Symbol, PERIOD_M15, MathMax(ATR_Period_M15*3, 50));
+   EnsureHistory(_Symbol, PERIOD_H1,  MathMax(ATR_Period_H1*3,  50));
+
    double b1[], b2[]; ArraySetAsSeries(b1, true); ArraySetAsSeries(b2, true);
-   if(CopyBuffer(hATR_M15, 0, 0, 1, b1) <= 0) return false;
-   if(CopyBuffer(hATR_H1,  0, 0, 1, b2) <= 0) return false;
-   atrM15 = b1[0];
-   atrH1  = b2[0];
+   int g1 = (hATR_M15!=INVALID_HANDLE) ? CopyBuffer(hATR_M15, 0, 0, 1, b1) : -1;
+   int g2 = (hATR_H1 !=INVALID_HANDLE) ? CopyBuffer(hATR_H1,  0, 0, 1, b2) : -1;
+   if(g1<=0 || !MathIsValidNumber(b1[0]) || b1[0]<=0.0) g1 = (hATR_M15!=INVALID_HANDLE) ? CopyBuffer(hATR_M15, 0, 1, 1, b1) : -1;
+   if(g2<=0 || !MathIsValidNumber(b2[0]) || b2[0]<=0.0) g2 = (hATR_H1 !=INVALID_HANDLE) ? CopyBuffer(hATR_H1,  0, 1, 1, b2) : -1;
+
+   // Фоллбэки на однократное чтение ATR закрытого бара
+   if(g1>0 && MathIsValidNumber(b1[0]) && b1[0] > 0.0) atrM15 = b1[0];
+   else atrM15 = GetATR(PERIOD_M15, ATR_Period_M15);
+   if(g2>0 && MathIsValidNumber(b2[0]) && b2[0] > 0.0) atrH1 = b2[0];
+   else atrH1 = GetATR(PERIOD_H1, ATR_Period_H1);
+
+   if(atrM15<=0.0 && atrH1<=0.0) return false;
    noise  = MathMax(Noise_Mult_M15 * atrM15, Noise_Mult_H1 * atrH1);
    return (MathIsValidNumber(noise) && noise > 0.0);
 }
@@ -3216,6 +3261,8 @@ void DrawNoiseLabel()
                            ATR_Period_M15, atrM15,
                            ATR_Period_H1,  atrH1,
                            Noise_Mult_M15, Noise_Mult_H1);
+   // Нормализуем пробелы для соответствия образцу вывода
+   StringReplace(text, "  (", " (");
 
    ObjectSetString(0, name, OBJPROP_TEXT, text);
 }
