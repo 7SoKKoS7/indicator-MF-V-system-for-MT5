@@ -2060,7 +2060,7 @@ void OnDeinit(const int reason)
     ObjectDelete(0, "MFV_WARMUP");
 
     // Noise label cleanup
-    ObjectDelete(0, "MFV_NOISE_LABEL");
+    ObjectDelete(0, NOISE_LABEL());
 }
 
 // (legacy single-pivot functions removed — using dual-pivot via ZigZag buffers)
@@ -3157,10 +3157,10 @@ int OnCalculate(const int rates_total,
    }
 
    DrawNoiseLabel();
+   ChartRedraw();
 
    return(rates_total);
 }
-//+------------------------------------------------------------------+
 
 bool GetATRsAndNoise(double &atrM15, double &atrH1, double &noise)
 {
@@ -3178,10 +3178,8 @@ bool GetATRsAndNoise(double &atrM15, double &atrH1, double &noise)
 void DrawNoiseLabel()
 {
    if(!ShowNoiseLabel) return;
-   double atrM15, atrH1, noise;
-   if(!GetATRsAndNoise(atrM15, atrH1, noise)) return;
 
-   string name = "MFV_NOISE_LABEL";
+   string name = NOISE_LABEL();
    if(ObjectFind(0, name) == -1)
    {
       ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
@@ -3192,11 +3190,18 @@ void DrawNoiseLabel()
    ObjectSetInteger(0, name, OBJPROP_COLOR, LabelColor);
    ObjectSetInteger(0, name, OBJPROP_CORNER, LabelCorner);
    ObjectSetInteger(0, name, OBJPROP_XDISTANCE, LabelX);
-   // Auto Y under Consensus if LabelY is not set for panel area
-   int yAuto = 250 + (ShowDetails ? 40 : 20); // Consensus at ~250, leave room
+   int yAuto = 250 + (ShowDetails ? 40 : 20);
    int yUse  = (LabelY <= 0 || LabelY == 24 ? yAuto : LabelY);
    ObjectSetInteger(0, name, OBJPROP_YDISTANCE, yUse);
    ObjectSetInteger(0, name, OBJPROP_FONTSIZE, LabelFontSize);
+
+   double atrM15=0.0, atrH1=0.0, noise=0.0;
+   if(!GetATRsAndNoise(atrM15, atrH1, noise))
+   {
+      ObjectSetString(0, name, OBJPROP_TEXT, "NOISE: NO DATA (load M15/H1)");
+      if(DebugLogs) Print("[NOISE] no data: ATR handles/copy not ready");
+      return;
+   }
 
    double nRound = RoundTo(noise, NoiseDecimals);
    string text = StringFormat("NOISE: %.*f  (%0.1f pips)",
