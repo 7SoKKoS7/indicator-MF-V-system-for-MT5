@@ -473,28 +473,60 @@ bool IsZigZagATRConfirmed(ENUM_TIMEFRAMES tf, int barIndex, double kATR, bool is
 
 double GetATR(ENUM_TIMEFRAMES tf, int period)
 {
-   const int p = (period > 0 ? period : 14);
-   int h = iATR(_Symbol, tf, p);
-   if(h == INVALID_HANDLE)
-      return 0.0;
-   double a[]; ArraySetAsSeries(a, true);
-   int got = CopyBuffer(h, 0, 1, 1, a);
-   IndicatorRelease(h);
-   if(got == 1 && a[0] > 0.0)
-      return a[0];
+   int p = (period > 0 ? period : 14);
+   int handle = iATR(_Symbol, tf, p);
+   if(handle == INVALID_HANDLE) return 0.0;
+   double buf[]; ArraySetAsSeries(buf, true);
+   int got = CopyBuffer(handle, 0, 1, 1, buf);
+   IndicatorRelease(handle);
+   if(got == 1 && MathIsValidNumber(buf[0]) && buf[0] > 0.0)
+      return buf[0];
    return 0.0;
 }
 
 bool IsBreakoutConfirmed(double level, int direction, ENUM_TIMEFRAMES tf, double atrMult, int minCloseBars, double noiseMultM15, double noiseMultH1)
 {
-   // Placeholder: interface only, no behavior change
-   if(direction == 0)
-      return false;
-   if(level <= 0.0 || atrMult < 0.0 || minCloseBars < 0)
-      return false;
-   switch(tf){ case PERIOD_M5: case PERIOD_M15: case PERIOD_H1: case PERIOD_H4: case PERIOD_D1: default: break; }
-   if(noiseMultM15<0.0 && noiseMultH1<0.0) { return false; }
-   return false;
+   if(direction == 0 || level <= 0.0 || minCloseBars <= 0) return false;
+
+   int bars = iBars(_Symbol, tf);
+   if(bars <= (minCloseBars + 1)) return false; // нужно как минимум minCloseBars закрытий
+
+   double atrM15 = GetATR(PERIOD_M15, ATR_Period_M15);
+   double atrH1  = GetATR(PERIOD_H1,  ATR_Period_H1);
+   double noise  = 0.0;
+   if(atrM15>0.0 || atrH1>0.0)
+      noise = MathMax(noiseMultM15 * atrM15, noiseMultH1 * atrH1);
+
+   // Проверка «прокола» (на последнем ЗАКРЫТОМ баре)
+   double c1  = iClose(_Symbol, tf, 1);
+   double lo1 = iLow (_Symbol, tf, 1);
+   double hi1 = iHigh(_Symbol, tf, 1);
+   if(direction > 0)
+   {
+      bool pierced = (lo1 <= level && c1 >= level && MathAbs(c1 - level) < noise);
+      if(pierced) return false;
+   }
+   else // direction < 0
+   {
+      bool pierced = (hi1 >= level && c1 <= level && MathAbs(c1 - level) < noise);
+      if(pierced) return false;
+   }
+
+   // Требование последовательных закрытий за уровень с учётом ATR(M15)
+   double thr = (atrMult > 0.0 && atrM15 > 0.0) ? (atrMult * atrM15) : 0.0;
+   for(int i=1; i<=minCloseBars; ++i)
+   {
+      double ci = iClose(_Symbol, tf, i);
+      if(direction > 0)
+      {
+         if(!(ci > level + thr)) return false;
+      }
+      else
+      {
+         if(!(ci < level - thr)) return false;
+      }
+   }
+   return true;
 }
 
 // --- Historical pivot series for backfill (per TF)
@@ -730,12 +762,10 @@ bool IsFlatPhase_M15()
 // Проверка закрепления H1 за соответствующим уровнем: для buy — PivotHigh_H1, для sell — PivotLow_H1
 bool CheckH1Breakout(const double pivotH1_H, const double pivotH1_L, const int dir)
 {
-   // dir = +1 buy, -1 sell
-   double c0 = iClose(_Symbol, PERIOD_H1, 1);
-    if(H1ClosesNeeded <= 1)
-       return (dir>0 ? c0>pivotH1_H : c0<pivotH1_L);
-   double c1 = iClose(_Symbol, PERIOD_H1, 2);
-    return (dir>0 ? (c0>pivotH1_H && c1>pivotH1_H) : (c0<pivotH1_L && c1<pivotH1_L));
+   // dir = +1 buy, -1 sell; подтверждение через IsBreakoutConfirmed с фильтром «прокола»
+   double level = (dir>0 ? pivotH1_H : pivotH1_L);
+   if(level <= 0.0) return false;
+   return IsBreakoutConfirmed(level, dir, PERIOD_H1, Breakout_ATR_Mult, H1ClosesNeeded, Noise_Mult_M15, Noise_Mult_H1);
 }
 
 // Ретест уровня H1 на M15 с отскоком: для buy ретест PivotHigh_H1, для sell — PivotLow_H1
@@ -2362,8 +2392,9 @@ int OnCalculate(const int rates_total,
          ObjectDelete(0, "H1_CLINCH_ZONE");
    }
 
-   // Для Long: дополнительно требуем, чтобы M5 пробил свой PivotHigh_M5 и был pullback (обеспечивается фильтрами подтверждения/импульса)
-   if(trendH1 == 1 && trendM15 == 1 && trendM5 == 1 && (cM5 > pivM5.high) && m5TrendChanged && canTrade)
+   // Для Long: пробой PivotHigh_M5 подтверждается через IsBreakoutConfirmed (без засчёта «прокола»)
+   bool breakoutM5Up = (pivM5.high>0.0) ? IsBreakoutConfirmed(pivM5.high, +1, PERIOD_M5, Breakout_ATR_Mult, Breakout_MinCloseBars, Noise_Mult_M15, Noise_Mult_H1) : false;
+   if(trendH1 == 1 && trendM15 == 1 && trendM5 == 1 && breakoutM5Up && m5TrendChanged && canTrade)
    {
       SigClass sc = SigStrong; // три ТФ совпали — базово сильный сигнал по MF-V
       sc = ApplyClinch(sc, UseClinchFilter ? clinchState.isClinch : false);
@@ -2484,7 +2515,7 @@ int OnCalculate(const int rates_total,
        }
        // legacy совместимость: removed lastPivot assignment
    }
-   else if(trendH1 == -1 && trendM15 == -1 && trendM5 == -1 && (cM5 < pivM5.low) && m5TrendChanged && canTrade)
+   else if(trendH1 == -1 && trendM15 == -1 && trendM5 == -1 && (pivM5.low>0.0 && IsBreakoutConfirmed(pivM5.low, -1, PERIOD_M5, Breakout_ATR_Mult, Breakout_MinCloseBars, Noise_Mult_M15, Noise_Mult_H1)) && m5TrendChanged && canTrade)
    {
       SigClass sc = SigStrong; // три ТФ совпали — базово сильный сигнал по MF-V
       sc = ApplyClinch(sc, UseClinchFilter ? clinchState.isClinch : false);
