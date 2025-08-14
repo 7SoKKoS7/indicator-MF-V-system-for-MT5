@@ -1947,7 +1947,7 @@ int OnInit()
    // Попытка загрузить кэш пивотов из глобальных переменных терминала (устойчивость при смене ТФ)
    if(LoadAllPivotsGV())
    {
-      if(VerboseLogs)
+      if(DebugLogs)
          Print(UseRussian?"Кэш pivot загружен из GV" : "Pivot cache restored from GV");
    }
 
@@ -3185,13 +3185,18 @@ void DrawNoiseLabel()
    if(ObjectFind(0, name) == -1)
    {
       ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
-      ObjectSetInteger(0, name, OBJPROP_BACK, true);
-      ObjectSetInteger(0, name, OBJPROP_COLOR, LabelColor);
-      ObjectSetInteger(0, name, OBJPROP_CORNER, LabelCorner);
-      ObjectSetInteger(0, name, OBJPROP_XDISTANCE, LabelX);
-      ObjectSetInteger(0, name, OBJPROP_YDISTANCE, LabelY);
-      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, LabelFontSize);
    }
+
+   // Refresh visual props each tick to reflect user changes
+   ObjectSetInteger(0, name, OBJPROP_BACK, true);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, LabelColor);
+   ObjectSetInteger(0, name, OBJPROP_CORNER, LabelCorner);
+   ObjectSetInteger(0, name, OBJPROP_XDISTANCE, LabelX);
+   // Auto Y under Consensus if LabelY is not set for panel area
+   int yAuto = 250 + (ShowDetails ? 40 : 20); // Consensus at ~250, leave room
+   int yUse  = (LabelY <= 0 || LabelY == 24 ? yAuto : LabelY);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, yUse);
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, LabelFontSize);
 
    double nRound = RoundTo(noise, NoiseDecimals);
    string text = StringFormat("NOISE: %.*f  (%0.1f pips)",
