@@ -329,29 +329,146 @@ bool UpdatePivotState(ENUM_TIMEFRAMES tf)
    const int idx = TfToIndex(tf);
    if(idx < 0 || idx >= 6)
       return false;
-   // No-op placeholder: assign timeframe to keep structure initialized
+
    piv[idx].tf = tf;
-   return false;
+
+   // Подготовка истории
+   int scan;
+   switch(tf)
+   {
+      case PERIOD_M5:  scan = 600; break;
+      case PERIOD_M15: scan = 400; break;
+      case PERIOD_H1:  scan = 240; break;
+      case PERIOD_H4:  scan = 200; break;
+      case PERIOD_D1:  scan = 150; break;
+      default:         scan = 300; break;
+   }
+
+   double h[], l[];
+   ArraySetAsSeries(h, true);
+   ArraySetAsSeries(l, true);
+   int gotH = CopyHigh(_Symbol, tf, 0, scan, h);
+   int gotL = CopyLow (_Symbol, tf, 0, scan, l);
+   if(gotH <= 3 || gotL <= 3) return false;
+
+   // Ищем последний локальный экстремум (кандидат): быстрый критерий 1-1
+   int candHi = -1, candLo = -1;
+   for(int i=2; i<MathMin(gotH-1, scan-1); ++i)
+   {
+      if(candHi<0)
+      {
+         bool locHigh = (h[i] > h[i-1] && h[i] >= h[i+1]);
+         if(locHigh) candHi = i;
+      }
+      if(candLo<0)
+      {
+         bool locLow = (l[i] < l[i-1] && l[i] <= l[i+1]);
+         if(locLow) candLo = i;
+      }
+      if(candHi>=0 && candLo>=0) break;
+   }
+
+   bool updated = false;
+   // Обновим кандидата High
+   if(candHi > 0)
+   {
+      piv[idx].iHigh = candHi;
+      piv[idx].high  = h[candHi];
+      piv[idx].tHigh = iTime(_Symbol, tf, candHi);
+
+      bool fractOK = false, atrOK = false;
+      if(UseFractalConfirm)
+         fractOK = IsFractalConfirmed(tf, candHi, PivotLeftBars, PivotRightBars, true);
+      if(UseZigZagATR)
+         atrOK   = IsZigZagATRConfirmed(tf, candHi, ZigZagATR_K, true);
+
+      // На H1 подтверждение обязательно. На младших ТФ — допускается ранний маркер (conf=false)
+      if(tf == PERIOD_H1)
+         piv[idx].confHigh = ( (UseFractalConfirm?fractOK:false) || (UseZigZagATR?atrOK:false) || (!UseFractalConfirm && !UseZigZagATR) );
+      else
+         piv[idx].confHigh = ( (UseFractalConfirm?fractOK:false) || (UseZigZagATR?atrOK:false) );
+
+      updated = true;
+   }
+
+   // Обновим кандидата Low
+   if(candLo > 0)
+   {
+      piv[idx].iLow = candLo;
+      piv[idx].low  = l[candLo];
+      piv[idx].tLow = iTime(_Symbol, tf, candLo);
+
+      bool fractOK = false, atrOK = false;
+      if(UseFractalConfirm)
+         fractOK = IsFractalConfirmed(tf, candLo, PivotLeftBars, PivotRightBars, false);
+      if(UseZigZagATR)
+         atrOK   = IsZigZagATRConfirmed(tf, candLo, ZigZagATR_K, false);
+
+      if(tf == PERIOD_H1)
+         piv[idx].confLow = ( (UseFractalConfirm?fractOK:false) || (UseZigZagATR?atrOK:false) || (!UseFractalConfirm && !UseZigZagATR) );
+      else
+         piv[idx].confLow = ( (UseFractalConfirm?fractOK:false) || (UseZigZagATR?atrOK:false) );
+
+      updated = true;
+   }
+
+   return updated;
 }
 
 bool IsFractalConfirmed(ENUM_TIMEFRAMES tf, int barIndex, int leftBars, int rightBars, bool isHigh)
 {
-   // Placeholder: interface only, no behavior change
-   if(barIndex < 0 || leftBars < 0 || rightBars < 0)
-      return false;
-   switch(tf){ case PERIOD_M5: case PERIOD_M15: case PERIOD_H1: case PERIOD_H4: case PERIOD_D1: default: break; }
-   if(isHigh && barIndex==-2147483647) { return false; }
-   return false;
+   if(barIndex < 1 || leftBars < 0 || rightBars < 0) return false;
+   // Требуем, чтобы справа было достаточно закрытых баров
+   if(barIndex + rightBars >= Bars(_Symbol, tf)) return false;
+
+   double v = isHigh ? iHigh(_Symbol, tf, barIndex) : iLow(_Symbol, tf, barIndex);
+   if(!MathIsValidNumber(v)) return false;
+
+   // Сравнение с более «новыми» барами (i-1..i-left)
+   for(int k=1; k<=leftBars; ++k)
+   {
+      double vn = isHigh ? iHigh(_Symbol, tf, barIndex - k) : iLow(_Symbol, tf, barIndex - k);
+      if(!MathIsValidNumber(vn)) return false;
+      if(isHigh){ if(v <= vn) return false; }
+      else       { if(v >= vn) return false; }
+   }
+   // Сравнение со «старыми» барами (i+1..i+right)
+   for(int k=1; k<=rightBars; ++k)
+   {
+      double vo = isHigh ? iHigh(_Symbol, tf, barIndex + k) : iLow(_Symbol, tf, barIndex + k);
+      if(!MathIsValidNumber(vo)) return false;
+      if(isHigh){ if(v < vo) return false; }
+      else       { if(v > vo) return false; }
+   }
+   return true;
 }
 
 bool IsZigZagATRConfirmed(ENUM_TIMEFRAMES tf, int barIndex, double kATR, bool isHigh)
 {
-   // Placeholder: interface only, no behavior change
-   if(barIndex < 0 || kATR <= 0.0)
-      return false;
-   switch(tf){ case PERIOD_M5: case PERIOD_M15: case PERIOD_H1: case PERIOD_H4: case PERIOD_D1: default: break; }
-   if(isHigh && barIndex==-2147483647) { return false; }
-   return false;
+   if(barIndex < 1 || kATR <= 0.0) return false;
+
+   // Цена кандидата
+   double priceCand = isHigh ? iHigh(_Symbol, tf, barIndex) : iLow(_Symbol, tf, barIndex);
+   if(!MathIsValidNumber(priceCand) || priceCand<=0) return false;
+
+   // Последний подтверждённый противоположный свинг на этом ТФ
+   double prevOpp = 0.0;
+   switch(tf)
+   {
+      case PERIOD_H1:  prevOpp = (isHigh ? pivH1.low  : pivH1.high);  break;
+      case PERIOD_M15: prevOpp = (isHigh ? pivM15.low : pivM15.high); break;
+      case PERIOD_M5:  prevOpp = (isHigh ? pivM5.low  : pivM5.high);  break;
+      case PERIOD_H4:  prevOpp = (isHigh ? pivH4.low  : pivH4.high);  break;
+      case PERIOD_D1:  prevOpp = (isHigh ? pivD1.low  : pivD1.high);  break;
+      default: break;
+   }
+   if(prevOpp <= 0.0) return false;
+
+   double atrH1 = GetATR_H1();
+   if(atrH1 <= 0.0) return false;
+
+   double step = isHigh ? (priceCand - prevOpp) : (prevOpp - priceCand);
+   return (step >= kATR * atrH1);
 }
 
 double GetATR(ENUM_TIMEFRAMES tf, int period)
@@ -1709,6 +1826,11 @@ void OnDeinit(const int reason)
     ObjectDelete(0, "MF_M15_L");
     ObjectDelete(0, "MF_M5_H");
     ObjectDelete(0, "MF_M5_L");
+    // Ранние (неподтверждённые) метки на младших ТФ
+    ObjectDelete(0, "PivotM15_H_Early");
+    ObjectDelete(0, "PivotM15_L_Early");
+    ObjectDelete(0, "PivotM5_H_Early");
+    ObjectDelete(0, "PivotM5_L_Early");
    ObjectDelete(0, objPivot);
    ObjectDelete(0, objR1);
    ObjectDelete(0, objR2);
@@ -2057,24 +2179,56 @@ int OnCalculate(const int rates_total,
       if(UpdatePivotsForTF(zzH1, PERIOD_H1, BACKSTEP, ph, pl, th, tl, shH, shL))
       {
          bool ch=false;
-         if(th>pivH1.high_time){ pivH1.high=ph; pivH1.high_time=th; ch=true; if(VerboseLogs) PrintFormat("New %s pivot %s at %s: %.5f (shift=%d)", "H1", "High", TimeToString(th, TIME_DATE|TIME_MINUTES), ph, shH); }
-         if(tl>pivH1.low_time) { pivH1.low =pl; pivH1.low_time =tl; ch=true; if(VerboseLogs) PrintFormat("New %s pivot %s at %s: %.5f (shift=%d)", "H1", "Low",  TimeToString(tl, TIME_DATE|TIME_MINUTES), pl, shL); }
+         if(th>pivH1.high_time)
+         {
+            bool fractOK = (UseFractalConfirm ? IsFractalConfirmed(PERIOD_H1, shH, PivotLeftBars, PivotRightBars, true) : false);
+            bool atrOK   = (UseZigZagATR     ? IsZigZagATRConfirmed(PERIOD_H1, shH, ZigZagATR_K, true)               : false);
+            bool allow   = fractOK || atrOK || (!UseFractalConfirm && !UseZigZagATR);
+            if(allow){ pivH1.high=ph; pivH1.high_time=th; ch=true; if(VerboseLogs) PrintFormat("New %s pivot %s at %s: %.5f (shift=%d)", "H1", "High", TimeToString(th, TIME_DATE|TIME_MINUTES), ph, shH); }
+         }
+         if(tl>pivH1.low_time)
+         {
+            bool fractOK = (UseFractalConfirm ? IsFractalConfirmed(PERIOD_H1, shL, PivotLeftBars, PivotRightBars, false) : false);
+            bool atrOK   = (UseZigZagATR     ? IsZigZagATRConfirmed(PERIOD_H1, shL, ZigZagATR_K, false)               : false);
+            bool allow   = fractOK || atrOK || (!UseFractalConfirm && !UseZigZagATR);
+            if(allow){ pivH1.low =pl; pivH1.low_time =tl; ch=true; if(VerboseLogs) PrintFormat("New %s pivot %s at %s: %.5f (shift=%d)", "H1", "Low",  TimeToString(tl, TIME_DATE|TIME_MINUTES), pl, shL); }
+         }
          if(ch){ pivH1.lastSwing = (pivH1.high_time >= pivH1.low_time ? -1 : +1); changed=true; }
       }
       // M15
       if(UpdatePivotsForTF(zzM15, PERIOD_M15, BACKSTEP, ph, pl, th, tl, shH, shL))
       {
          bool ch=false;
-         if(th>pivM15.high_time){ pivM15.high=ph; pivM15.high_time=th; ch=true; if(VerboseLogs) PrintFormat("New %s pivot %s at %s: %.5f (shift=%d)", "M15", "High", TimeToString(th, TIME_DATE|TIME_MINUTES), ph, shH); }
-         if(tl>pivM15.low_time) { pivM15.low =pl; pivM15.low_time =tl; ch=true; if(VerboseLogs) PrintFormat("New %s pivot %s at %s: %.5f (shift=%d)", "M15", "Low",  TimeToString(tl, TIME_DATE|TIME_MINUTES), pl, shL); }
+         if(th>pivM15.high_time)
+         {
+            bool fractOK = (UseFractalConfirm ? IsFractalConfirmed(PERIOD_M15, shH, PivotLeftBars, PivotRightBars, true) : false);
+            bool atrOK   = (UseZigZagATR     ? IsZigZagATRConfirmed(PERIOD_M15, shH, ZigZagATR_K, true)               : false);
+            if(fractOK || atrOK){ pivM15.high=ph; pivM15.high_time=th; ch=true; if(VerboseLogs) PrintFormat("New %s pivot %s at %s: %.5f (shift=%d)", "M15", "High", TimeToString(th, TIME_DATE|TIME_MINUTES), ph, shH); }
+         }
+         if(tl>pivM15.low_time)
+         {
+            bool fractOK = (UseFractalConfirm ? IsFractalConfirmed(PERIOD_M15, shL, PivotLeftBars, PivotRightBars, false) : false);
+            bool atrOK   = (UseZigZagATR     ? IsZigZagATRConfirmed(PERIOD_M15, shL, ZigZagATR_K, false)               : false);
+            if(fractOK || atrOK){ pivM15.low =pl; pivM15.low_time =tl; ch=true; if(VerboseLogs) PrintFormat("New %s pivot %s at %s: %.5f (shift=%d)", "M15", "Low",  TimeToString(tl, TIME_DATE|TIME_MINUTES), pl, shL); }
+         }
          if(ch){ pivM15.lastSwing = (pivM15.high_time >= pivM15.low_time ? -1 : +1); changed=true; }
       }
       // M5
       if(UpdatePivotsForTF(zzM5, PERIOD_M5, BACKSTEP, ph, pl, th, tl, shH, shL))
       {
          bool ch=false;
-         if(th>pivM5.high_time){ pivM5.high=ph; pivM5.high_time=th; ch=true; if(VerboseLogs) PrintFormat("New %s pivot %s at %s: %.5f (shift=%d)", "M5", "High", TimeToString(th, TIME_DATE|TIME_MINUTES), ph, shH); }
-         if(tl>pivM5.low_time) { pivM5.low =pl; pivM5.low_time =tl; ch=true; if(VerboseLogs) PrintFormat("New %s pivot %s at %s: %.5f (shift=%d)", "M5", "Low",  TimeToString(tl, TIME_DATE|TIME_MINUTES), pl, shL); }
+         if(th>pivM5.high_time)
+         {
+            bool fractOK = (UseFractalConfirm ? IsFractalConfirmed(PERIOD_M5, shH, PivotLeftBars, PivotRightBars, true) : false);
+            bool atrOK   = (UseZigZagATR     ? IsZigZagATRConfirmed(PERIOD_M5, shH, ZigZagATR_K, true)               : false);
+            if(fractOK || atrOK){ pivM5.high=ph; pivM5.high_time=th; ch=true; if(VerboseLogs) PrintFormat("New %s pivot %s at %s: %.5f (shift=%d)", "M5", "High", TimeToString(th, TIME_DATE|TIME_MINUTES), ph, shH); }
+         }
+         if(tl>pivM5.low_time)
+         {
+            bool fractOK = (UseFractalConfirm ? IsFractalConfirmed(PERIOD_M5, shL, PivotLeftBars, PivotRightBars, false) : false);
+            bool atrOK   = (UseZigZagATR     ? IsZigZagATRConfirmed(PERIOD_M5, shL, ZigZagATR_K, false)               : false);
+            if(fractOK || atrOK){ pivM5.low =pl; pivM5.low_time =tl; ch=true; if(VerboseLogs) PrintFormat("New %s pivot %s at %s: %.5f (shift=%d)", "M5", "Low",  TimeToString(tl, TIME_DATE|TIME_MINUTES), pl, shL); }
+         }
          if(ch){ pivM5.lastSwing = (pivM5.high_time >= pivM5.low_time ? -1 : +1); changed=true; }
       }
       // Обновим флаги готовности
@@ -2670,6 +2824,11 @@ int OnCalculate(const int rates_total,
 
    // Комментарий по пивотам удалён, чтобы не накладываться на панель статуса
 
+   // Обновим кандидатов и их статусы подтверждения для визуализации
+   UpdatePivotState(PERIOD_M5);
+   UpdatePivotState(PERIOD_M15);
+   // H1 — всегда требуем подтверждения, ранние метки для H1 не рисуем
+
    // Отрисовка dual‑pivot линий (названия согласно ТЗ)
    if(ShowPivotHighLow)
    {
@@ -2696,6 +2855,28 @@ int OnCalculate(const int rates_total,
          if(pivD1.high>0.0) DrawOrUpdateLine("PivotD1_H", pivD1.high, PivotHighColor, 1, STYLE_DASHDOTDOT);
          if(pivD1.low>0.0)  DrawOrUpdateLine("PivotD1_L", pivD1.low,  PivotLowColor,  1, STYLE_DASHDOTDOT);
       }
+
+       // Неподтверждённые (ранние) метки для младших ТФ: серые пунктирные линии
+       // M15
+       {
+           int i15 = TfToIndex(PERIOD_M15);
+           if(piv[i15].high>0.0 && !piv[i15].confHigh)
+              DrawOrUpdateLine("PivotM15_H_Early", piv[i15].high, clrSilver, 1, STYLE_DOT);
+           else ObjectDelete(0, "PivotM15_H_Early");
+           if(piv[i15].low>0.0 && !piv[i15].confLow)
+              DrawOrUpdateLine("PivotM15_L_Early", piv[i15].low,  clrSilver, 1, STYLE_DOT);
+           else ObjectDelete(0, "PivotM15_L_Early");
+       }
+       // M5
+       {
+           int i5 = TfToIndex(PERIOD_M5);
+           if(piv[i5].high>0.0 && !piv[i5].confHigh)
+              DrawOrUpdateLine("PivotM5_H_Early", piv[i5].high, clrSilver, 1, STYLE_DOT);
+           else ObjectDelete(0, "PivotM5_H_Early");
+           if(piv[i5].low>0.0 && !piv[i5].confLow)
+              DrawOrUpdateLine("PivotM5_L_Early", piv[i5].low,  clrSilver, 1, STYLE_DOT);
+           else ObjectDelete(0, "PivotM5_L_Early");
+       }
    }
 
    // Отрисовка классических уровней Pivot (Daily) — как отдельная подсистема
