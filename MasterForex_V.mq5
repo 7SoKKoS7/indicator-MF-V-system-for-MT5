@@ -141,6 +141,18 @@ input int    MinBarsBetweenArrows = 6;        // Минимум баров ме�
 
 input group "=== Логирование ==="
 input bool   VerboseLogs = false;             // Подробные логи (инициализация/обновления пивотов)
+input bool   DebugLogs   = false;             // Отладочная цепочка решений (1 раз на бар)
+
+input group "=== ATR / Noise Label ==="
+input bool   ShowNoiseLabel   = true;
+// ATR_Period_M15 / ATR_Period_H1 и множители Noise_Mult_* уже заданы выше и переиспользуются
+input int    NoiseDecimals    = 5;      // округление noise в цене
+input bool   ShowDetails      = true;   // показывать ATR-ы и множители в label
+input ENUM_BASE_CORNER LabelCorner = CORNER_LEFT_UPPER;
+input int    LabelX           = 8;
+input int    LabelY           = 24;
+input color  LabelColor       = clrWhite;
+input int    LabelFontSize    = 10;
 
 // Якорение стрелок к базовому ТФ, чтобы сигналы были одинаковыми на всех графиках
 enum AnchorMode { Anchor_Current, Anchor_M5 };
@@ -201,6 +213,10 @@ double EarlyExitBuffer[];   // ранний выход
 int    atrH1Handle = INVALID_HANDLE;
 double lastAtrH1   = 0.0;
 datetime lastClinchCalcOnH1 = 0;
+
+// Handles for noise label ATRs
+int hATR_M15 = INVALID_HANDLE;
+int hATR_H1  = INVALID_HANDLE;
 
 struct ClinchStatus
 {
@@ -495,6 +511,11 @@ double ToPips(const double priceDelta)
 double FromPips(const double pips)
 {
    return pips * _Point;
+}
+
+double RoundTo(const double v, const int digits)
+{
+   return (digits>=0 ? NormalizeDouble(v, digits) : v);
 }
 
 bool IsBreakoutConfirmed(double level, int direction, ENUM_TIMEFRAMES tf, double atrMult, int minCloseBars, double noiseMultM15, double noiseMultH1)
@@ -1859,6 +1880,10 @@ int OnInit()
       return(INIT_FAILED);
    PlotIndexSetInteger(8, PLOT_LINE_COLOR, EarlyExitColor);
 
+   // ATR handles for noise label
+   hATR_M15 = iATR(_Symbol, PERIOD_M15, ATR_Period_M15);
+   hATR_H1  = iATR(_Symbol, PERIOD_H1,  ATR_Period_H1);
+
    // Инициализация ZigZag per TF (built-in) с проверкой хэндлов
    zzH1  = iCustom(_Symbol, PERIOD_H1,  "ZigZag", Depth_H1, Dev_H1, 3);
    if(zzH1 == INVALID_HANDLE)
@@ -2033,6 +2058,9 @@ void OnDeinit(const int reason)
 
     // Всегда удаляем warm-up лейбл, чтобы не зависал после снятия индикатора
     ObjectDelete(0, "MFV_WARMUP");
+
+    // Noise label cleanup
+    ObjectDelete(0, "MFV_NOISE_LABEL");
 }
 
 // (legacy single-pivot functions removed — using dual-pivot via ZigZag buffers)
@@ -2447,6 +2475,40 @@ int OnCalculate(const int rates_total,
    VolumeAnalysis volumeAnalysis;
    AnalyzeVolumeOnMasterForexTimeframes(volumeAnalysis);
    analysis.volumeConfirmed = (volumeAnalysis.confirmedTimeframes >= 2); // Минимум 2 из 3
+
+   // --- Debug chain (1 time per current bar) ---
+   static datetime lastDebugBarTime = 0;
+   if(DebugLogs)
+   {
+      // Anchor bar time at current TF, closed bar 1
+      datetime dbgT = iTime(_Symbol, (ENUM_TIMEFRAMES)Period(), 1);
+      if(dbgT != 0 && dbgT != lastDebugBarTime)
+      {
+         double atrM15_dbg = GetATR(PERIOD_M15, ATR_Period_M15);
+         double atrH1_dbg  = GetATR(PERIOD_H1,  ATR_Period_H1);
+         double noise_dbg  = 0.0;
+         if(atrM15_dbg>0.0 || atrH1_dbg>0.0)
+            noise_dbg = MathMax(Noise_Mult_M15 * atrM15_dbg, Noise_Mult_H1 * atrH1_dbg);
+         string tfName;
+         switch((int)Period())
+         {
+            case PERIOD_M5:  tfName = "M5";  break;
+            case PERIOD_M15: tfName = "M15"; break;
+            case PERIOD_H1:  tfName = "H1";  break;
+            case PERIOD_H4:  tfName = "H4";  break;
+            case PERIOD_D1:  tfName = "D1";  break;
+            default: tfName = IntegerToString((int)Period()); break;
+         }
+         string pivH1ok  = (pivH1.high>0.0 && pivH1.low>0.0)  ? "✓" : "✗";
+         string pivM15ok = (pivM15.high>0.0 && pivM15.low>0.0)? "✓" : "✗";
+         PrintFormat("DBG [%s %s] level(H1.H/L)=%s/%s ATR(M15)=%.1f pips ATR(H1)=%.1f pips noise=%.1f pips atrMult=%.2f pivConfirmed(H1/M15)=%s/%s vol2of3=%d sess=%s",
+                     TimeToString(dbgT, TIME_DATE|TIME_MINUTES), tfName,
+                     (pivH1.high>0?DoubleToString(pivH1.high,_Digits):"-"), (pivH1.low>0?DoubleToString(pivH1.low,_Digits):"-"),
+                     ToPips(atrM15_dbg), ToPips(atrH1_dbg), ToPips(noise_dbg), Breakout_ATR_Mult,
+                     pivH1ok, pivM15ok, volumeAnalysis.confirmedTimeframes>=2, (analysis.sessionValid?"✓":"✗"));
+         lastDebugBarTime = dbgT;
+      }
+   }
 
    // Формирование строк статуса
    string strH1  = trendH1 > 0  ? "↑" : (trendH1 < 0  ? "↓" : "-");
@@ -3094,6 +3156,51 @@ int OnCalculate(const int rates_total,
        PruneAllSignalsToLastN(rates_total, 1);
    }
 
+   DrawNoiseLabel();
+
    return(rates_total);
 }
 //+------------------------------------------------------------------+
+
+bool GetATRsAndNoise(double &atrM15, double &atrH1, double &noise)
+{
+   atrM15 = 0.0; atrH1 = 0.0; noise = 0.0;
+   if(hATR_M15 == INVALID_HANDLE || hATR_H1 == INVALID_HANDLE) return false;
+   double b1[], b2[]; ArraySetAsSeries(b1, true); ArraySetAsSeries(b2, true);
+   if(CopyBuffer(hATR_M15, 0, 0, 1, b1) <= 0) return false;
+   if(CopyBuffer(hATR_H1,  0, 0, 1, b2) <= 0) return false;
+   atrM15 = b1[0];
+   atrH1  = b2[0];
+   noise  = MathMax(Noise_Mult_M15 * atrM15, Noise_Mult_H1 * atrH1);
+   return (MathIsValidNumber(noise) && noise > 0.0);
+}
+
+void DrawNoiseLabel()
+{
+   if(!ShowNoiseLabel) return;
+   double atrM15, atrH1, noise;
+   if(!GetATRsAndNoise(atrM15, atrH1, noise)) return;
+
+   string name = "MFV_NOISE_LABEL";
+   if(ObjectFind(0, name) == -1)
+   {
+      ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
+      ObjectSetInteger(0, name, OBJPROP_BACK, true);
+      ObjectSetInteger(0, name, OBJPROP_COLOR, LabelColor);
+      ObjectSetInteger(0, name, OBJPROP_CORNER, LabelCorner);
+      ObjectSetInteger(0, name, OBJPROP_XDISTANCE, LabelX);
+      ObjectSetInteger(0, name, OBJPROP_YDISTANCE, LabelY);
+      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, LabelFontSize);
+   }
+
+   double nRound = RoundTo(noise, NoiseDecimals);
+   string text = StringFormat("NOISE: %.*f  (%0.1f pips)",
+                              NoiseDecimals, nRound, ToPips(nRound));
+   if(ShowDetails)
+      text += StringFormat("\nATR(M15,%d)=%.5f | ATR(H1,%d)=%.5f\nmax(%.1fx, %.1fx)",
+                           ATR_Period_M15, atrM15,
+                           ATR_Period_H1,  atrH1,
+                           Noise_Mult_M15, Noise_Mult_H1);
+
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+}
