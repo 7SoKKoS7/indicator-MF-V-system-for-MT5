@@ -81,6 +81,9 @@ input bool   RetestAllowM5        = true;  // Разрешить ретест н
 input int    RetestWindowM5       = 36;    // Окно ретеста в M5-барах (около 3 ч)
 input double RetestTolATR_M5      = 0.35;  // Допуск касания: ±0.35*ATR(M5)
 
+input group "=== MF Entry Confirmation ==="
+input bool   RequireH1Confirm     = true;  // Требовать согласование с H1 pivot или клинч
+
 input group "=== Импульс-откат (MF A-B-C на M15) ==="
 input bool   UseImpulseFilter     = true;   // Включить фильтр импульса/отката
 input double ImpulseMinRatio      = 1.5;    // |B−A| / |C−B| минимум для "здорового" импульса
@@ -484,6 +487,16 @@ double GetATR(ENUM_TIMEFRAMES tf, int period)
    return 0.0;
 }
 
+// --- Pips/points helpers (consistent units)
+double ToPips(const double priceDelta)
+{
+   return (_Point > 0.0 ? priceDelta / _Point : 0.0);
+}
+double FromPips(const double pips)
+{
+   return pips * _Point;
+}
+
 bool IsBreakoutConfirmed(double level, int direction, ENUM_TIMEFRAMES tf, double atrMult, int minCloseBars, double noiseMultM15, double noiseMultH1)
 {
    if(direction == 0 || level <= 0.0 || minCloseBars <= 0) return false;
@@ -501,32 +514,64 @@ bool IsBreakoutConfirmed(double level, int direction, ENUM_TIMEFRAMES tf, double
    double c1  = iClose(_Symbol, tf, 1);
    double lo1 = iLow (_Symbol, tf, 1);
    double hi1 = iHigh(_Symbol, tf, 1);
+   
+   bool ok = true;
    if(direction > 0)
    {
       bool pierced = (lo1 <= level && c1 >= level && MathAbs(c1 - level) < noise);
-      if(pierced) return false;
+      if(pierced) ok = false;
    }
    else // direction < 0
    {
       bool pierced = (hi1 >= level && c1 <= level && MathAbs(c1 - level) < noise);
-      if(pierced) return false;
+      if(pierced) ok = false;
    }
 
    // Требование последовательных закрытий за уровень с учётом ATR(M15)
    double thr = (atrMult > 0.0 && atrM15 > 0.0) ? (atrMult * atrM15) : 0.0;
-   for(int i=1; i<=minCloseBars; ++i)
+   if(ok)
    {
-      double ci = iClose(_Symbol, tf, i);
-      if(direction > 0)
+      for(int i=1; i<=minCloseBars; ++i)
       {
-         if(!(ci > level + thr)) return false;
-      }
-      else
-      {
-         if(!(ci < level - thr)) return false;
+         double ci = iClose(_Symbol, tf, i);
+         if(direction > 0)
+         {
+            if(!(ci > level + thr)) { ok = false; break; }
+         }
+         else
+         {
+            if(!(ci < level - thr)) { ok = false; break; }
+         }
       }
    }
-   return true;
+
+   if(VerboseLogs)
+   {
+      double atrRatio = (atrM15>0.0 && atrMult>0.0 ? thr/atrM15 : 0.0);
+      double over = (direction>0 ? (c1 - level) : (level - c1));
+      string verdict = ok ? (UseRussian?"OK":"OK") : (UseRussian?"NO":"NO");
+      PrintFormat("Breakout tf=%d dir=%+d level=%s thr=%.1f pips (%.2fx ATR M15) noise=%.1f pips closeΔ=%.1f pips -> %s",
+                  (int)tf, direction, DoubleToString(level, _Digits),
+                  ToPips(thr), atrRatio, ToPips(noise), ToPips(over), verdict);
+   }
+
+   // Визуальная подпись пробоя у уровня
+   if(ok)
+   {
+      datetime t = iTime(_Symbol, tf, 1);
+      string name = StringFormat("MF_BRK_%d_%d_%I64d", (int)tf, direction, (long)t);
+      if(ObjectFind(0, name) < 0)
+      {
+         string txt = StringFormat("+%.1fx ATR M15", atrMult);
+         ObjectCreate(0, name, OBJ_TEXT, 0, t, level);
+         ObjectSetInteger(0, name, OBJPROP_COLOR, (direction>0 ? clrLime : clrRed));
+         ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 8);
+         ObjectSetString(0, name, OBJPROP_TEXT, txt);
+         ObjectSetInteger(0, name, OBJPROP_BACK, true);
+      }
+   }
+
+   return ok;
 }
 
 // --- Historical pivot series for backfill (per TF)
@@ -817,7 +862,26 @@ bool CheckRetestBounce_M15(const double pivotH1Level, const int dir, datetime fr
       }
        // update outs for last touched bar we evaluate
        outClose = closeOk; outWick = wickOk; outVol = volOk;
-       if(closeOk && wickOk && volOk) return true;
+       if(closeOk && wickOk && volOk)
+       {
+           if(VerboseLogs)
+           {
+               PrintFormat("Retest M15 ok at %s: wick=%s vol=%s dist=%.1f pips",
+                           TimeToString(t, TIME_DATE|TIME_MINUTES),
+                           (wickOk?"✓":"✗"), (volOk?"✓":"✗"), ToPips(MathAbs(c - pivotH1Level)));
+           }
+           string nm = StringFormat("MF_RT15_%I64d", (long)t);
+           if(ObjectFind(0, nm) < 0)
+           {
+               ObjectCreate(0, nm, OBJ_TEXT, 0, t, pivotH1Level);
+               ObjectSetInteger(0, nm, OBJPROP_COLOR, (dir>0?clrLime:clrRed));
+               ObjectSetInteger(0, nm, OBJPROP_FONTSIZE, 8);
+               string txt = UseRussian ? "retest ok" : "retest ok";
+               ObjectSetString(0, nm, OBJPROP_TEXT, txt);
+               ObjectSetInteger(0, nm, OBJPROP_BACK, true);
+           }
+           return true;
+       }
    }
    return false;
 }
@@ -858,7 +922,89 @@ bool CheckRetestBounce_M5(const double pivotH1Level, const int dir, datetime fro
          volOk = (avg>0.0 ? ( (double)v >= RetestVolMult*avg ) : true);
       }
        outClose = closeOk; outWick = wickOk; outVol = volOk;
-       if(closeOk && wickOk && volOk) return true;
+       if(closeOk && wickOk && volOk)
+       {
+           if(VerboseLogs)
+           {
+               PrintFormat("Retest M5 ok at %s: wick=%s vol=%s dist=%.1f pips",
+                           TimeToString(t, TIME_DATE|TIME_MINUTES),
+                           (wickOk?"✓":"✗"), (volOk?"✓":"✗"), ToPips(MathAbs(c - pivotH1Level)));
+           }
+           string nm = StringFormat("MF_RT5_%I64d", (long)t);
+           if(ObjectFind(0, nm) < 0)
+           {
+               ObjectCreate(0, nm, OBJ_TEXT, 0, t, pivotH1Level);
+               ObjectSetInteger(0, nm, OBJPROP_COLOR, (dir>0?clrLime:clrRed));
+               ObjectSetInteger(0, nm, OBJPROP_FONTSIZE, 8);
+               string txt = UseRussian ? "retest ok" : "retest ok";
+               ObjectSetString(0, nm, OBJPROP_TEXT, txt);
+               ObjectSetInteger(0, nm, OBJPROP_BACK, true);
+           }
+           return true;
+       }
+   }
+   return false;
+}
+
+// Упрощённый MF "reclaim/retest": касание зоны уровня и закрытие в сторону пробоя
+bool PassedRetest(const double level, const int direction, const ENUM_TIMEFRAMES tf,
+                  const int lookbackBars, const double noise)
+{
+   if(level<=0.0 || direction==0 || lookbackBars<=0) return false;
+   int bars = iBars(_Symbol, tf);
+   if(bars <= (lookbackBars+1)) return false;
+   int lb = MathMin(lookbackBars, bars-2);
+   for(int i=1; i<=lb; ++i)
+   {
+      double lo = iLow(_Symbol, tf, i);
+      double hi = iHigh(_Symbol, tf, i);
+      double cl = iClose(_Symbol, tf, i);
+      bool touched = (hi >= level - noise && lo <= level + noise);
+      if(!touched) continue;
+      if(direction>0)
+      {
+         if(cl > level)
+         {
+            if(VerboseLogs)
+            {
+               PrintFormat("Retest %d ok at %s: noise=%.1f pips dist=%.1f pips",
+                           (int)tf, TimeToString(iTime(_Symbol, tf, i), TIME_DATE|TIME_MINUTES),
+                           ToPips(noise), ToPips(MathAbs(cl-level)));
+            }
+            string nm = StringFormat("MF_RT_%d_%I64d", (int)tf, (long)iTime(_Symbol, tf, i));
+            if(ObjectFind(0, nm) < 0)
+            {
+               ObjectCreate(0, nm, OBJ_TEXT, 0, iTime(_Symbol, tf, i), level);
+               ObjectSetInteger(0, nm, OBJPROP_COLOR, clrLime);
+               ObjectSetInteger(0, nm, OBJPROP_FONTSIZE, 8);
+               ObjectSetString(0, nm, OBJPROP_TEXT, "retest ok");
+               ObjectSetInteger(0, nm, OBJPROP_BACK, true);
+            }
+            return true;
+         }
+      }
+      else
+      {
+         if(cl < level)
+         {
+            if(VerboseLogs)
+            {
+               PrintFormat("Retest %d ok at %s: noise=%.1f pips dist=%.1f pips",
+                           (int)tf, TimeToString(iTime(_Symbol, tf, i), TIME_DATE|TIME_MINUTES),
+                           ToPips(noise), ToPips(MathAbs(cl-level)));
+            }
+            string nm = StringFormat("MF_RT_%d_%I64d", (int)tf, (long)iTime(_Symbol, tf, i));
+            if(ObjectFind(0, nm) < 0)
+            {
+               ObjectCreate(0, nm, OBJ_TEXT, 0, iTime(_Symbol, tf, i), level);
+               ObjectSetInteger(0, nm, OBJPROP_COLOR, clrRed);
+               ObjectSetInteger(0, nm, OBJPROP_FONTSIZE, 8);
+               ObjectSetString(0, nm, OBJPROP_TEXT, "retest ok");
+               ObjectSetInteger(0, nm, OBJPROP_BACK, true);
+            }
+            return true;
+         }
+      }
    }
    return false;
 }
@@ -2392,9 +2538,19 @@ int OnCalculate(const int rates_total,
          ObjectDelete(0, "H1_CLINCH_ZONE");
    }
 
-   // Для Long: пробой PivotHigh_M5 подтверждается через IsBreakoutConfirmed (без засчёта «прокола»)
+   // Для Long: пробой PivotHigh_M5 подтверждается через IsBreakoutConfirmed + обязательный ретест (M15)
+   double atrM15_now = GetATR(PERIOD_M15, ATR_Period_M15);
+   double atrH1_now  = GetATR(PERIOD_H1,  ATR_Period_H1);
+   double noiseEntry = MathMax(Noise_Mult_M15 * atrM15_now, Noise_Mult_H1 * atrH1_now);
    bool breakoutM5Up = (pivM5.high>0.0) ? IsBreakoutConfirmed(pivM5.high, +1, PERIOD_M5, Breakout_ATR_Mult, Breakout_MinCloseBars, Noise_Mult_M15, Noise_Mult_H1) : false;
-   if(trendH1 == 1 && trendM15 == 1 && trendM5 == 1 && breakoutM5Up && m5TrendChanged && canTrade)
+   bool retestM15Up  = (breakoutM5Up && pivM5.high>0.0) ? PassedRetest(pivM5.high, +1, PERIOD_M15, 10, noiseEntry) : false;
+   bool pivAgreeUp   = (iClose(_Symbol, PERIOD_M15, 1) > pivM15.low);
+   if(RequireH1Confirm)
+   {
+      bool aboveH1 = (iClose(_Symbol, PERIOD_H1, ClosedShiftAtTime(PERIOD_H1, tAnchorM5)) > pivH1.low);
+      pivAgreeUp = pivAgreeUp && (aboveH1 || clinchState.isClinch);
+   }
+   if(trendH1 == 1 && trendM15 == 1 && trendM5 == 1 && breakoutM5Up && retestM15Up && pivAgreeUp && m5TrendChanged && canTrade)
    {
       SigClass sc = SigStrong; // три ТФ совпали — базово сильный сигнал по MF-V
       sc = ApplyClinch(sc, UseClinchFilter ? clinchState.isClinch : false);
@@ -2515,8 +2671,18 @@ int OnCalculate(const int rates_total,
        }
        // legacy совместимость: removed lastPivot assignment
    }
-   else if(trendH1 == -1 && trendM15 == -1 && trendM5 == -1 && (pivM5.low>0.0 && IsBreakoutConfirmed(pivM5.low, -1, PERIOD_M5, Breakout_ATR_Mult, Breakout_MinCloseBars, Noise_Mult_M15, Noise_Mult_H1)) && m5TrendChanged && canTrade)
+   else if(trendH1 == -1 && trendM15 == -1 && trendM5 == -1)
    {
+      bool breakoutM5Dn = (pivM5.low>0.0) ? IsBreakoutConfirmed(pivM5.low, -1, PERIOD_M5, Breakout_ATR_Mult, Breakout_MinCloseBars, Noise_Mult_M15, Noise_Mult_H1) : false;
+      bool retestM15Dn  = (breakoutM5Dn && pivM5.low>0.0) ? PassedRetest(pivM5.low, -1, PERIOD_M15, 10, noiseEntry) : false;
+      bool pivAgreeDn   = (iClose(_Symbol, PERIOD_M15, 1) < pivM15.high);
+      if(RequireH1Confirm)
+      {
+         bool belowH1 = (iClose(_Symbol, PERIOD_H1, ClosedShiftAtTime(PERIOD_H1, tAnchorM5)) < pivH1.high);
+         pivAgreeDn = pivAgreeDn && (belowH1 || clinchState.isClinch);
+      }
+      if(breakoutM5Dn && retestM15Dn && pivAgreeDn && m5TrendChanged && canTrade)
+      {
       SigClass sc = SigStrong; // три ТФ совпали — базово сильный сигнал по MF-V
       sc = ApplyClinch(sc, UseClinchFilter ? clinchState.isClinch : false);
 
@@ -2626,6 +2792,7 @@ int OnCalculate(const int rates_total,
           lastExitPivot = best2;
        }
        // legacy совместимость: removed lastPivot assignment
+      }
    }
    else if(trendH1 == 1 && trendM5 == 1 && trendM15 != 1 && m5TrendChanged && earlyCanTrade && ShowEarlySignals && ( (rates_total-1) - lastArrowBarEarlyB >= MinBarsBetweenArrows) )
    {
