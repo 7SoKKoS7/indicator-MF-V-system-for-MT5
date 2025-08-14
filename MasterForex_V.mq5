@@ -46,6 +46,22 @@ input double Dev_M5    = 5.0, Dev_M15   = 7.0, Dev_H1   = 12.0, Dev_H4   = 20.0,
 input group "=== Толеранс тренда (ATR) ==="
 input double TrendTolAtrK = 0.10;             // Толеранс сравнения цены с pivot: k * ATR(H1)
 
+input group "=== Pivot confirmation (MF-V) ==="
+input bool   UseFractalConfirm = true;
+input int    PivotLeftBars = 2;         // фрактал слева
+input int    PivotRightBars = 2;        // фрактал справа
+input bool   UseZigZagATR = true;       // альтернативное подтверждение
+input double ZigZagATR_K = 1.2;         // шаг зигзага = K * ATR(H1)
+
+input group "=== Breakout confirmation ==="
+input int    ATR_Period_M15 = 14;
+input int    ATR_Period_H1  = 14;
+input double Breakout_ATR_Mult = 1.0;   // насколько закрытие дальше уровня
+input int    Breakout_MinCloseBars = 1; // сколько баров закрытия требуем
+input double Noise_Mult_M15 = 1.2;      // буфер «прокола»
+input double Noise_Mult_H1  = 0.6;
+input bool   CloseConfirmOnly = true;   // учитывать только закрытия
+
 input group "=== Фильтры MasterForex-V ==="
 input double MinVolumeMultiplier = 1.2;       // Минимальный множитель объема
 input int    MinTrendStrength = 2;            // Минимальная сила тренда (1-3)
@@ -277,6 +293,92 @@ bool LoadAllPivotsGV()
 }
 
 // Историческое восстановление стрелок и их персистентность отключены — индикатор рисует только реальные события
+
+// --- Modular pivot/confirmation scaffolding (no-op, does not change behavior)
+struct PivotState
+{
+   double           high;
+   double           low;
+   datetime         tHigh;
+   datetime         tLow;
+   int              iHigh;
+   int              iLow;
+   bool             confHigh;
+   bool             confLow;
+   ENUM_TIMEFRAMES  tf;
+};
+
+// Global per-timeframe pivot state cache (M5, M15, H1, H4, D1, other)
+static PivotState piv[6];
+
+int TfToIndex(const ENUM_TIMEFRAMES tf)
+{
+   switch(tf)
+   {
+      case PERIOD_M5:  return 0;
+      case PERIOD_M15: return 1;
+      case PERIOD_H1:  return 2;
+      case PERIOD_H4:  return 3;
+      case PERIOD_D1:  return 4;
+      default:         return 5;
+   }
+}
+
+bool UpdatePivotState(ENUM_TIMEFRAMES tf)
+{
+   const int idx = TfToIndex(tf);
+   if(idx < 0 || idx >= 6)
+      return false;
+   // No-op placeholder: assign timeframe to keep structure initialized
+   piv[idx].tf = tf;
+   return false;
+}
+
+bool IsFractalConfirmed(ENUM_TIMEFRAMES tf, int barIndex, int leftBars, int rightBars, bool isHigh)
+{
+   // Placeholder: interface only, no behavior change
+   if(barIndex < 0 || leftBars < 0 || rightBars < 0)
+      return false;
+   switch(tf){ case PERIOD_M5: case PERIOD_M15: case PERIOD_H1: case PERIOD_H4: case PERIOD_D1: default: break; }
+   if(isHigh && barIndex==-2147483647) { return false; }
+   return false;
+}
+
+bool IsZigZagATRConfirmed(ENUM_TIMEFRAMES tf, int barIndex, double kATR, bool isHigh)
+{
+   // Placeholder: interface only, no behavior change
+   if(barIndex < 0 || kATR <= 0.0)
+      return false;
+   switch(tf){ case PERIOD_M5: case PERIOD_M15: case PERIOD_H1: case PERIOD_H4: case PERIOD_D1: default: break; }
+   if(isHigh && barIndex==-2147483647) { return false; }
+   return false;
+}
+
+double GetATR(ENUM_TIMEFRAMES tf, int period)
+{
+   const int p = (period > 0 ? period : 14);
+   int h = iATR(_Symbol, tf, p);
+   if(h == INVALID_HANDLE)
+      return 0.0;
+   double a[]; ArraySetAsSeries(a, true);
+   int got = CopyBuffer(h, 0, 1, 1, a);
+   IndicatorRelease(h);
+   if(got == 1 && a[0] > 0.0)
+      return a[0];
+   return 0.0;
+}
+
+bool IsBreakoutConfirmed(double level, int direction, ENUM_TIMEFRAMES tf, double atrMult, int minCloseBars, double noiseMultM15, double noiseMultH1)
+{
+   // Placeholder: interface only, no behavior change
+   if(direction == 0)
+      return false;
+   if(level <= 0.0 || atrMult < 0.0 || minCloseBars < 0)
+      return false;
+   switch(tf){ case PERIOD_M5: case PERIOD_M15: case PERIOD_H1: case PERIOD_H4: case PERIOD_D1: default: break; }
+   if(noiseMultM15<0.0 && noiseMultH1<0.0) { return false; }
+   return false;
+}
 
 // --- Historical pivot series for backfill (per TF)
 struct PivotSeries
@@ -1541,6 +1643,26 @@ int OnInit()
       PrintFormat("INIT+: H4=%d D1=%d",
                   Bars(_Symbol,PERIOD_H4), Bars(_Symbol,PERIOD_D1));
    #endif
+
+   // --- Scaffolding warmup (no-op to avoid unused inputs warnings)
+   UpdatePivotState(PERIOD_M5);
+   UpdatePivotState(PERIOD_M15);
+   UpdatePivotState(PERIOD_H1);
+   if(UseTF_H4) UpdatePivotState(PERIOD_H4);
+   if(UseTF_D1) UpdatePivotState(PERIOD_D1);
+
+   int _barForStub = 1;
+   if(UseFractalConfirm)
+   {
+      if(IsFractalConfirmed(PERIOD_H1, _barForStub, PivotLeftBars, PivotRightBars, true)) { }
+   }
+   if(UseZigZagATR)
+   {
+      if(IsZigZagATRConfirmed(PERIOD_H1, _barForStub, ZigZagATR_K, true)) { }
+   }
+   if(GetATR(PERIOD_M15, ATR_Period_M15) < 0.0) { }
+   if(GetATR(PERIOD_H1,  ATR_Period_H1)  < 0.0) { }
+   if(IsBreakoutConfirmed(0.0, +1, PERIOD_H1, Breakout_ATR_Mult, Breakout_MinCloseBars, Noise_Mult_M15, Noise_Mult_H1)) { }
 
    return(INIT_SUCCEEDED);
 }
