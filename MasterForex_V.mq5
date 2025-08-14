@@ -120,6 +120,9 @@ input bool   ShowHistorySignals = true;       // Исторические стр
 input int    SignalsLookbackBars= 500;        // Ограничение истории стрелок (закрытые бары)
 input int    MinBarsBetweenArrows = 6;        // Минимум баров между одинаковыми стрелками
 
+input group "=== Логирование ==="
+input bool   VerboseLogs = false;             // Подробные логи (инициализация/обновления пивотов)
+
 // Якорение стрелок к базовому ТФ, чтобы сигналы были одинаковыми на всех графиках
 enum AnchorMode { Anchor_Current, Anchor_M5 };
 input AnchorMode SignalAnchor = Anchor_M5;    // На каком ТФ фиксировать время сигнала при отрисовке
@@ -687,6 +690,143 @@ bool EnsureTFHistory(const ENUM_TIMEFRAMES tf, const int minBars)
    return (synced && (got > 0 || have >= MathMin(minBars, 100)));
 }
 
+// Возвращает последний подтверждённый свинг из встроенного ZigZag на заданном ТФ.
+// wantHigh=true → буфер High(1), иначе Low(2). Подтверждение: shift ≥ Backstep+1.
+// Исключаем текущий бар (начинаем с индекса 1). На выход: цена, время и сдвиг.
+bool GetLastConfirmedSwing(const ENUM_TIMEFRAMES tf,
+                          const bool wantHigh,
+                          double    &priceOut,
+                          datetime  &timeOut,
+                          int       &shiftOut)
+{
+   priceOut = 0.0;
+   timeOut  = 0;
+   shiftOut = -1;
+
+   const int handle = GetZZHandle(tf);
+   if(handle == INVALID_HANDLE) return false;
+   if(!EnsureZigZagReady(handle)) return false;
+
+   // Backstep совпадает с параметром при создании iCustom(..., 3)
+   const int ZZ_BACKSTEP = 3;
+
+   // Убедимся, что история загружена
+   int bars = iBars(_Symbol, tf);
+   int closed = MathMax(0, bars - 1);
+   if(closed <= ZZ_BACKSTEP) return false;
+
+   int scan = MathMin(closed, GetScanBarsForTF(tf));
+   if(scan <= ZZ_BACKSTEP) return false;
+
+   int bufIndex = (wantHigh ? 1 : 2);
+   double buf[]; ArraySetAsSeries(buf, true);
+   int got = CopyBuffer(handle, bufIndex, 1, scan, buf);
+   if(got <= 0) return false;
+
+   // Требуем shift ≥ ZZ_BACKSTEP+1 ⇒ i ≥ ZZ_BACKSTEP (buf[i] ↔ shift=1+i)
+   int maxShiftAllowed = closed - ZZ_BACKSTEP;            // не правее bars_total - 1 - Backstep
+   int iMax = MathMin(got - 1, maxShiftAllowed - 1);
+   for(int i=ZZ_BACKSTEP; i<=iMax; ++i)
+   {
+      double v = buf[i];
+      if(v != 0.0 && v != EMPTY_VALUE && MathIsValidNumber(v))
+      {
+         int sh = 1 + i;
+         priceOut = v;
+         timeOut  = iTime(_Symbol, tf, sh);
+         shiftOut = sh;
+         return true;
+      }
+   }
+   return false;
+}
+
+// Возвращает последние подтверждённые PivotHigh/PivotLow (цена, время, shift) на ТФ tf
+bool GetDualPivotsForTF(const ENUM_TIMEFRAMES tf,
+                        double   &outHigh,
+                        datetime &outHighTime,
+                        int      &outHighShift,
+                        double   &outLow,
+                        datetime &outLowTime,
+                        int      &outLowShift)
+{
+   outHigh = 0.0; outHighTime = 0; outHighShift = -1;
+   outLow  = 0.0; outLowTime  = 0; outLowShift  = -1;
+
+   bool okH = GetLastConfirmedSwing(tf, true,  outHigh, outHighTime, outHighShift);
+   bool okL = GetLastConfirmedSwing(tf, false, outLow,  outLowTime,  outLowShift);
+   return (okH || okL);
+}
+
+// Обновляет (вычисляет) подтверждённые пивоты для заданного ZigZag‑хэндла и ТФ.
+// Возврат: true, если удалось прочитать хотя бы один из свингов (High/Low).
+bool UpdatePivotsForTF(const int zzHandle,
+                       const ENUM_TIMEFRAMES tf,
+                       const int backstep,
+                       double   &pivotHigh,
+                       double   &pivotLow,
+                       datetime &tHigh,
+                       datetime &tLow,
+                       int      &sHigh,
+                       int      &sLow)
+{
+   pivotHigh = 0.0; pivotLow = 0.0;
+   tHigh = 0; tLow = 0;
+   sHigh = -1; sLow = -1;
+
+   if(zzHandle == INVALID_HANDLE) return false;
+   if(!EnsureZigZagReady(zzHandle)) return false;
+
+   int bars = iBars(_Symbol, tf);
+   int closed = MathMax(0, bars - 1);
+   if(closed <= backstep) return false;
+
+   int scan = MathMin(closed, GetScanBarsForTF(tf));
+   if(scan <= backstep) return false;
+
+   // Буферы ZigZag: 1=High, 2=Low
+   double bh[], bl[]; ArraySetAsSeries(bh,true); ArraySetAsSeries(bl,true);
+   int gotH = CopyBuffer(zzHandle, 1, 1, scan, bh);
+   int gotL = CopyBuffer(zzHandle, 2, 1, scan, bl);
+   bool any=false;
+
+   if(gotH>backstep)
+   {
+      int maxShiftAllowed = closed - backstep;         // не правее bars_total - 1 - Backstep
+      int iMax = MathMin(gotH - 1, maxShiftAllowed - 1);
+      for(int i=backstep; i<=iMax; ++i)
+      {
+         double v = bh[i];
+         if(v!=0.0 && v!=EMPTY_VALUE && MathIsValidNumber(v))
+         {
+            sHigh = 1 + i;
+            pivotHigh = v;
+            tHigh = iTime(_Symbol, tf, sHigh);
+            any = true;
+            break;
+         }
+      }
+   }
+   if(gotL>backstep)
+   {
+      int maxShiftAllowed = closed - backstep;         // не правее bars_total - 1 - Backstep
+      int iMax = MathMin(gotL - 1, maxShiftAllowed - 1);
+      for(int i=backstep; i<=iMax; ++i)
+      {
+         double v = bl[i];
+         if(v!=0.0 && v!=EMPTY_VALUE && MathIsValidNumber(v))
+         {
+            sLow = 1 + i;
+            pivotLow = v;
+            tLow = iTime(_Symbol, tf, sLow);
+            any = true;
+            break;
+         }
+      }
+   }
+   return any;
+}
+
 // Читает ZigZag и обновляет подтверждённые High/Low для заданного ТФ.
 // Используются только закрытые бары (индексы >=1). Не затирает противоположную сторону.
 bool CalculatePivots(const ENUM_TIMEFRAMES tf, TFPivots &io)
@@ -791,12 +931,90 @@ void UpdatePivotsCache()
    // До первой инициализации НЕ троттлим, чтобы уйти от "Waiting for data..." на минуту
    if(pivotsEverReady && pivotsLastUpdate!=0 && (now - pivotsLastUpdate) <= 60) return;
 
-   bool u1 = CalculatePivots(PERIOD_H1,  pivH1);
-   bool u2 = CalculatePivots(PERIOD_M15, pivM15);
-   bool u3 = CalculatePivots(PERIOD_M5,  pivM5);
-   bool u4 = false, u5 = false;
-   if(UseTF_H4) u4 = CalculatePivots(PERIOD_H4, pivH4);
-   if(UseTF_D1) u5 = CalculatePivots(PERIOD_D1, pivD1);
+   bool u1=false, u2=false, u3=false, u4=false, u5=false;
+
+   // H1
+   {
+      double ph=0.0, pl=0.0; datetime th=0, tl=0; int shH=-1, shL=-1;
+      if(GetDualPivotsForTF(PERIOD_H1, ph, th, shH, pl, tl, shL))
+      {
+         bool ch=false;
+         if(th>pivH1.high_time){ pivH1.high=ph; pivH1.high_time=th; ch=true; }
+         if(tl>pivH1.low_time) { pivH1.low =pl; pivH1.low_time =tl; ch=true; }
+         if(ch)
+         {
+            if(pivH1.high_time >= pivH1.low_time && pivH1.high_time!=0) pivH1.lastSwing = -1;
+            else if(pivH1.low_time > pivH1.high_time && pivH1.low_time!=0) pivH1.lastSwing = +1;
+            u1=true;
+         }
+      }
+   }
+   // M15
+   {
+      double ph=0.0, pl=0.0; datetime th=0, tl=0; int shH=-1, shL=-1;
+      if(GetDualPivotsForTF(PERIOD_M15, ph, th, shH, pl, tl, shL))
+      {
+         bool ch=false;
+         if(th>pivM15.high_time){ pivM15.high=ph; pivM15.high_time=th; ch=true; }
+         if(tl>pivM15.low_time) { pivM15.low =pl; pivM15.low_time =tl; ch=true; }
+         if(ch)
+         {
+            if(pivM15.high_time >= pivM15.low_time && pivM15.high_time!=0) pivM15.lastSwing = -1;
+            else if(pivM15.low_time > pivM15.high_time && pivM15.low_time!=0) pivM15.lastSwing = +1;
+            u2=true;
+         }
+      }
+   }
+   // M5
+   {
+      double ph=0.0, pl=0.0; datetime th=0, tl=0; int shH=-1, shL=-1;
+      if(GetDualPivotsForTF(PERIOD_M5, ph, th, shH, pl, tl, shL))
+      {
+         bool ch=false;
+         if(th>pivM5.high_time){ pivM5.high=ph; pivM5.high_time=th; ch=true; }
+         if(tl>pivM5.low_time) { pivM5.low =pl; pivM5.low_time =tl; ch=true; }
+         if(ch)
+         {
+            if(pivM5.high_time >= pivM5.low_time && pivM5.high_time!=0) pivM5.lastSwing = -1;
+            else if(pivM5.low_time > pivM5.high_time && pivM5.low_time!=0) pivM5.lastSwing = +1;
+            u3=true;
+         }
+      }
+   }
+   // H4 (optional)
+   if(UseTF_H4)
+   {
+      double ph=0.0, pl=0.0; datetime th=0, tl=0; int shH=-1, shL=-1;
+      if(GetDualPivotsForTF(PERIOD_H4, ph, th, shH, pl, tl, shL))
+      {
+         bool ch=false;
+         if(th>pivH4.high_time){ pivH4.high=ph; pivH4.high_time=th; ch=true; }
+         if(tl>pivH4.low_time) { pivH4.low =pl; pivH4.low_time =tl; ch=true; }
+         if(ch)
+         {
+            if(pivH4.high_time >= pivH4.low_time && pivH4.high_time!=0) pivH4.lastSwing = -1;
+            else if(pivH4.low_time > pivH4.high_time && pivH4.low_time!=0) pivH4.lastSwing = +1;
+            u4=true;
+         }
+      }
+   }
+   // D1 (optional)
+   if(UseTF_D1)
+   {
+      double ph=0.0, pl=0.0; datetime th=0, tl=0; int shH=-1, shL=-1;
+      if(GetDualPivotsForTF(PERIOD_D1, ph, th, shH, pl, tl, shL))
+      {
+         bool ch=false;
+         if(th>pivD1.high_time){ pivD1.high=ph; pivD1.high_time=th; ch=true; }
+         if(tl>pivD1.low_time) { pivD1.low =pl; pivD1.low_time =tl; ch=true; }
+         if(ch)
+         {
+            if(pivD1.high_time >= pivD1.low_time && pivD1.high_time!=0) pivD1.lastSwing = -1;
+            else if(pivD1.low_time > pivD1.high_time && pivD1.low_time!=0) pivD1.lastSwing = +1;
+            u5=true;
+         }
+      }
+   }
 
    bool ok1 = (pivH1.high>0.0 && pivH1.low>0.0);
    bool ok2 = (pivM15.high>0.0 && pivM15.low>0.0);
@@ -1308,7 +1526,10 @@ int OnInit()
 
    // Попытка загрузить кэш пивотов из глобальных переменных терминала (устойчивость при смене ТФ)
    if(LoadAllPivotsGV())
-      Print(UseRussian?"Кэш pivot загружен из GV" : "Pivot cache restored from GV");
+   {
+      if(VerboseLogs)
+         Print(UseRussian?"Кэш pivot загружен из GV" : "Pivot cache restored from GV");
+   }
 
     // Историческое восстановление стрелок отключено
 
@@ -1359,6 +1580,13 @@ void OnDeinit(const int reason)
    ObjectDelete(0, "PivotD1_H");
    ObjectDelete(0, "PivotD1_L");
    ObjectDelete(0, "H1_CLINCH_ZONE");
+    // Новые линии MF_* для H1/M15/M5
+    ObjectDelete(0, "MF_H1_H");
+    ObjectDelete(0, "MF_H1_L");
+    ObjectDelete(0, "MF_M15_H");
+    ObjectDelete(0, "MF_M15_L");
+    ObjectDelete(0, "MF_M5_H");
+    ObjectDelete(0, "MF_M5_L");
    ObjectDelete(0, objPivot);
    ObjectDelete(0, objR1);
    ObjectDelete(0, objR2);
@@ -1697,8 +1925,43 @@ int OnCalculate(const int rates_total,
    static int    lastArrowBarEarlyB  = -10000;
    static int    lastArrowBarEarlyS  = -10000;
 
-   // Обновление dual‑pivot значений
-   UpdatePivotsCache();
+   // Обновление dual‑pivot значений через ZigZag‑хэндлы только при появлении нового свинга
+   {
+      const int BACKSTEP = 3; // соответствует iCustom(..., 3)
+      bool changed=false;
+      double ph=0.0, pl=0.0; datetime th=0, tl=0; int shH=-1, shL=-1;
+
+      // H1
+      if(UpdatePivotsForTF(zzH1, PERIOD_H1, BACKSTEP, ph, pl, th, tl, shH, shL))
+      {
+         bool ch=false;
+         if(th>pivH1.high_time){ pivH1.high=ph; pivH1.high_time=th; ch=true; if(VerboseLogs) PrintFormat("New %s pivot %s at %s: %.5f (shift=%d)", "H1", "High", TimeToString(th, TIME_DATE|TIME_MINUTES), ph, shH); }
+         if(tl>pivH1.low_time) { pivH1.low =pl; pivH1.low_time =tl; ch=true; if(VerboseLogs) PrintFormat("New %s pivot %s at %s: %.5f (shift=%d)", "H1", "Low",  TimeToString(tl, TIME_DATE|TIME_MINUTES), pl, shL); }
+         if(ch){ pivH1.lastSwing = (pivH1.high_time >= pivH1.low_time ? -1 : +1); changed=true; }
+      }
+      // M15
+      if(UpdatePivotsForTF(zzM15, PERIOD_M15, BACKSTEP, ph, pl, th, tl, shH, shL))
+      {
+         bool ch=false;
+         if(th>pivM15.high_time){ pivM15.high=ph; pivM15.high_time=th; ch=true; if(VerboseLogs) PrintFormat("New %s pivot %s at %s: %.5f (shift=%d)", "M15", "High", TimeToString(th, TIME_DATE|TIME_MINUTES), ph, shH); }
+         if(tl>pivM15.low_time) { pivM15.low =pl; pivM15.low_time =tl; ch=true; if(VerboseLogs) PrintFormat("New %s pivot %s at %s: %.5f (shift=%d)", "M15", "Low",  TimeToString(tl, TIME_DATE|TIME_MINUTES), pl, shL); }
+         if(ch){ pivM15.lastSwing = (pivM15.high_time >= pivM15.low_time ? -1 : +1); changed=true; }
+      }
+      // M5
+      if(UpdatePivotsForTF(zzM5, PERIOD_M5, BACKSTEP, ph, pl, th, tl, shH, shL))
+      {
+         bool ch=false;
+         if(th>pivM5.high_time){ pivM5.high=ph; pivM5.high_time=th; ch=true; if(VerboseLogs) PrintFormat("New %s pivot %s at %s: %.5f (shift=%d)", "M5", "High", TimeToString(th, TIME_DATE|TIME_MINUTES), ph, shH); }
+         if(tl>pivM5.low_time) { pivM5.low =pl; pivM5.low_time =tl; ch=true; if(VerboseLogs) PrintFormat("New %s pivot %s at %s: %.5f (shift=%d)", "M5", "Low",  TimeToString(tl, TIME_DATE|TIME_MINUTES), pl, shL); }
+         if(ch){ pivM5.lastSwing = (pivM5.high_time >= pivM5.low_time ? -1 : +1); changed=true; }
+      }
+      // Обновим флаги готовности
+      bool ok1 = (pivH1.high>0.0 && pivH1.low>0.0);
+      bool ok2 = (pivM15.high>0.0 && pivM15.low>0.0);
+      bool ok3 = (pivM5.high>0.0 && pivM5.low>0.0);
+      pivotsEverReady = (ok1 && ok2 && ok3);
+      if(changed){ pivotsLastUpdate = TimeCurrent(); SaveAllPivotsGV(); }
+   }
    
    // Грациозная деградация: если какой‑то TF ещё не готов, не блокируем весь расчёт —
    // просто пропустим соответствующие проверки/условия далее.
@@ -2277,6 +2540,8 @@ int OnCalculate(const int rates_total,
       }
    }
 
+   // Комментарий по пивотам удалён, чтобы не накладываться на панель статуса
+
    // Отрисовка dual‑pivot линий (названия согласно ТЗ)
    if(ShowPivotHighLow)
    {
@@ -2286,6 +2551,13 @@ int OnCalculate(const int rates_total,
       if(pivM15.low>0.0)  DrawOrUpdateLine("PivotM15_L", pivM15.low,  PivotLowColor,  1, STYLE_DASHDOTDOT);
       if(pivM5.high>0.0)  DrawOrUpdateLine("PivotM5_H",  pivM5.high,  PivotHighColor, 1, STYLE_DASHDOTDOT);
       if(pivM5.low>0.0)   DrawOrUpdateLine("PivotM5_L",  pivM5.low,   PivotLowColor,  1, STYLE_DASHDOTDOT);
+      // Доп. линии MF_* (STYLE_DOT, бэкграунд)
+      if(pivH1.high>0.0)  DrawOrUpdateLine("MF_H1_H",   pivH1.high,  PivotHighColor, 1, STYLE_DOT);
+      if(pivH1.low>0.0)   DrawOrUpdateLine("MF_H1_L",   pivH1.low,   PivotLowColor,  1, STYLE_DOT);
+      if(pivM15.high>0.0) DrawOrUpdateLine("MF_M15_H",  pivM15.high, PivotHighColor, 1, STYLE_DOT);
+      if(pivM15.low>0.0)  DrawOrUpdateLine("MF_M15_L",  pivM15.low,  PivotLowColor,  1, STYLE_DOT);
+      if(pivM5.high>0.0)  DrawOrUpdateLine("MF_M5_H",   pivM5.high,  PivotHighColor, 1, STYLE_DOT);
+      if(pivM5.low>0.0)   DrawOrUpdateLine("MF_M5_L",   pivM5.low,   PivotLowColor,  1, STYLE_DOT);
       if(UseTF_H4)
       {
          if(pivH4.high>0.0) DrawOrUpdateLine("PivotH4_H", pivH4.high, PivotHighColor, 1, STYLE_DASHDOTDOT);
