@@ -2463,6 +2463,12 @@ int OnCalculate(const int rates_total,
 
    // Статус CLINCH (режим зоны)
    double rangeAtr = (clinchState.atr > 0.0 ? (clinchState.range / clinchState.atr) : 0.0);
+   double rangePts = (clinchState.range > 0.0 ? (clinchState.range / _Point) : 0.0);
+   string rangeStr;
+   if(clinchState.atr > 0.0)
+      rangeStr = StringFormat("%.2f ATR (%.0f pts)", rangeAtr, rangePts);
+   else
+      rangeStr = StringFormat("%.0f pts", rangePts);
    string clinchOn = clinchState.isClinch ? (UseRussian ? "✓" : "✓") : (UseRussian ? "✗" : "✗");
    string bandText = (ClinchZone==Clinch_ATR_Midline)
                      ? (UseRussian? StringFormat("zone=±%.2f ATR", ClinchAtrK)
@@ -2477,8 +2483,8 @@ int OnCalculate(const int rates_total,
       intervalText = StringFormat("[%s → %s] ", f, t);
    }
    string clinchText = UseRussian ?
-       StringFormat("Схватка: %s, %sflips=%d, range=%.2f ATR, %s", clinchOn, intervalText, clinchState.flips, rangeAtr, bandText) :
-       StringFormat("Clinch: %s, %sflips=%d, range=%.2f ATR, %s", clinchOn, intervalText, clinchState.flips, rangeAtr, bandText);
+       StringFormat("Схватка: %s, %sflips=%d, range=%s, %s", clinchOn, intervalText, clinchState.flips, rangeStr, bandText) :
+       StringFormat("Clinch: %s, %sflips=%d, range=%s, %s", clinchOn, intervalText, clinchState.flips, rangeStr, bandText);
    DrawRowLabel("MFV_STATUS_CLINCH", clinchText, 210);
 
    // Ретест отладка (косметика): выводим последнюю известную проверку ретеста
