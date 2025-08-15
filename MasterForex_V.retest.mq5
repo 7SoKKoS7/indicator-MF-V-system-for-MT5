@@ -3613,3 +3613,109 @@ bool DetectBreakDn_M15(const double pivotL, const double breakBuf)
    }
    return false;
 }
+
+// --- Evaluate retest after a recorded break on M15 (closed bars only)
+void EvaluateRetest_M15(const double pivotH, const double pivotL,
+                        const double breakBuf, const double retestTol)
+{
+   // Only act when a break was recorded
+   if(S_M15.state == NoBreak || S_M15.lastBreakTime == 0) return;
+
+   // Determine base parameters per direction
+   bool isUp = (S_M15.state == BreakUp);
+   double pivot = (isUp ? pivotH : pivotL);
+   if(pivot <= 0.0) return;
+
+   // Bar index of the break bar (at current time axis)
+   int shBreak = iBarShift(_Symbol, PERIOD_M15, S_M15.lastBreakTime, false);
+   if(shBreak < 1) return; // safety
+
+   // Precompute noise half-buffer in points from pips
+   double halfNoisePts = Points(AutoNoisePips() * 0.5);
+
+   // TTL: if label exists and age exceeded, do not re-render labels (keep status only)
+   if(S_M15.labelBarIndex >= 1)
+   {
+      int age = shBreak - S_M15.labelBarIndex;
+      if(age > Label_TTL_Bars)
+      {
+         // Do not repaint label beyond TTL; keep retestOkPrinted flag until explicit FAIL/new Break
+         return;
+      }
+   }
+
+   // Scan first Retest_MaxBars closed bars AFTER the break bar: indices (shBreak-1) .. (shBreak-Retest_MaxBars)
+   int maxBars = MathMax(1, Retest_MaxBars);
+   for(int k=1; k<=maxBars; ++k)
+   {
+      int idx = shBreak - k;
+      if(idx < 1) break;
+
+      double o = iOpen (_Symbol, PERIOD_M15, idx);
+      double h = iHigh (_Symbol, PERIOD_M15, idx);
+      double l = iLow  (_Symbol, PERIOD_M15, idx);
+      double c = iClose(_Symbol, PERIOD_M15, idx);
+      datetime t = iTime(_Symbol, PERIOD_M15, idx);
+      if(!(MathIsValidNumber(h) && MathIsValidNumber(l) && MathIsValidNumber(c))) continue;
+
+      // OK condition
+      bool ok=false;
+      if(isUp)
+      {
+         bool touched = (l <= (pivot + retestTol));
+         bool closed  = (c >= (pivot + halfNoisePts));
+         ok = (touched && closed);
+      }
+      else
+      {
+         bool touched = (h >= (pivot - retestTol));
+         bool closed  = (c <= (pivot - halfNoisePts));
+         ok = (touched && closed);
+      }
+
+      if(ok && !S_M15.retestOkPrinted)
+      {
+         // Mark OK once
+         color col = (isUp ? clrLime : clrLime);
+         string nm = StringFormat("[RT_OK_M15_%I64d]", (long)t);
+         if(ObjectFind(0, nm) < 0)
+         {
+            ObjectCreate(0, nm, OBJ_TEXT, 0, t, pivot);
+            ObjectSetInteger(0, nm, OBJPROP_COLOR, col);
+            ObjectSetInteger(0, nm, OBJPROP_FONTSIZE, 8);
+            ObjectSetInteger(0, nm, OBJPROP_BACK, true);
+            ObjectSetString(0, nm, OBJPROP_TEXT, "RETEST OK");
+         }
+         S_M15.retestOkPrinted = true;
+         S_M15.labelBarIndex = idx;
+         return; // do not continue scanning once OK is set
+      }
+
+      // FAIL condition (prior to OK)
+      if(!S_M15.retestOkPrinted)
+      {
+         bool fail=false;
+         if(isUp)
+            fail = (c <= (pivot - breakBuf));
+         else
+            fail = (c >= (pivot + breakBuf));
+         if(fail)
+         {
+            string nf = StringFormat("[RT_FAIL_M15_%I64d]", (long)t);
+            if(ObjectFind(0, nf) < 0)
+            {
+               ObjectCreate(0, nf, OBJ_TEXT, 0, t, pivot);
+               ObjectSetInteger(0, nf, OBJPROP_COLOR, clrRed);
+               ObjectSetInteger(0, nf, OBJPROP_FONTSIZE, 8);
+               ObjectSetInteger(0, nf, OBJPROP_BACK, true);
+               ObjectSetString(0, nf, OBJPROP_TEXT, "RETEST FAIL");
+            }
+            // Reset state
+            S_M15.retestOkPrinted = false;
+            S_M15.state = NoBreak;
+            S_M15.labelBarIndex = -1;
+            return;
+         }
+      }
+   }
+}
