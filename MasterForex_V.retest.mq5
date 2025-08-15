@@ -15,13 +15,9 @@
 #property indicator_buffers 9
 #property indicator_plots   9
 
-// --- Debug logging flag and macro
+// --- Debug logging flag and helper (no variadic macros in MQL5)
 #define MFV_DEBUG 1
-#if (MFV_DEBUG)
-  #define DBG(fmt, ...) PrintFormat("[MFV] " fmt, __VA_ARGS__)
-#else
-  #define DBG(fmt, ...) ((void)0)
-#endif
+void DBG(const string msg){ if(MFV_DEBUG) Print("[MFV] ", msg); }
 
 // --- Breakout confirmation settings
 enum ConfirmMode { Confirm_Off, Confirm_StrongOnly, Confirm_StrongAndNormal, Confirm_All };
