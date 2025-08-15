@@ -1,60 +1,57 @@
-MasterForex‑V MultiTF Indicator (MT5) — проектный контекст и правила
+# MasterForex-V Modular (MFV_Modular): Cursor Rules
 
-Роль и цель
-- Ты помощник по MQL5/Python для индикатора “MasterForex‑V MultiTF v8.2308”.
-- Задача: поддержка и доработка `MasterForex_Pivot_my_v82308.mq5` и связанного кода, без превращения в советника (EA).
+## Цель
+Генерировать и поддерживать модульный индикатор MQL5 «MFV_Modular» по методике MasterForex-V (Master Complex).
+Легаси-файл «MasterForex_V_legacy.mq5» используется ТОЛЬКО как эталон, не изменять.
 
-Функционал индикатора (must-have)
-- Мультитаймфрейм: M5, M15, H1, H4, D1.
-- MF‑pivot с оптимизированным ZigZag.
-- Анализ объема на 3 ТФ: M5, M15, H1. Требование: минимум 2 из 3 подтверждают объем.
-- Фильтр торговых сессий: Лондон, Нью‑Йорк, Токио.
-- Сила тренда: шкала 1–3.
-- Информационная панель: направления трендов (H1/M15/M5), уровни pivot, сила тренда, объемы по ТФ, валидность сессии.
-- Используем завершенные бары (no repaint). Производительность: кэш pivot, обновлять кэш не чаще 1 раза в минуту.
+## Scope
+Работать только с:
+- MQL5/Indicators/MFV_Modular/**
+- docs/**
+Читать, но НЕ изменять:
+- MQL5/Indicators/MasterForex_V_legacy.mq5
 
-Типы сигналов и правила
-- Сильный (желтая стрелка): все 3 ТФ совпали; сила 3/3; объем подтвержден (≥2/3); валидная сессия.
-- Обычный (зел./красн.): все 3 ТФ совпали; сила 1–2/3; объем подтвержден; валидная сессия.
-- Ранний (голубая): частичное совпадение (H1 и M5, но не M15); сила 1–2/3; объем подтвержден; валидная сессия.
-- Выход (серый крестик): цена пересекла противоположный pivot → закрыть позицию по методике.
-- Разворот (аква): изменение направления тренда на H1 и M15, потенциальный разворот.
+## Архитектура (обязательна)
+Файлы:
+- MQL5/Indicators/MFV_Modular/MFV_Modular.mq5
+- MQL5/Indicators/MFV_Modular/include/Config.mqh
+- MQL5/Indicators/MFV_Modular/include/State.mqh
+- MQL5/Indicators/MFV_Modular/include/MarketData.mqh
+- MQL5/Indicators/MFV_Modular/include/PivotEngine.mqh
+- MQL5/Indicators/MFV_Modular/include/TrendEngine.mqh
+- MQL5/Indicators/MFV_Modular/include/Breakout.mqh
+- MQL5/Indicators/MFV_Modular/include/Filters.mqh
+- MQL5/Indicators/MFV_Modular/include/Signals.mqh
+- MQL5/Indicators/MFV_Modular/include/Draw.mqh
+- MQL5/Indicators/MFV_Modular/include/Panel.mqh
 
-Настройки (интерфейс input — не менять смысл и названия)
-- Основные:
-  input bool UseRussian = false;
-  input bool ShowClassicPivot = true;
-  input bool ShowStatusInfo = true;
-  input bool EnableVolumeFilter = true;
-  input bool EnableSessionFilter = true;
-- ZigZag:
-  input int InpDepth = 12;
-  input double InpDeviation = 5.0;
-- Фильтры MasterForex‑V:
-  input double MinVolumeMultiplier = 1.2;
-  input int    MinTrendStrength = 2;
-  input bool   UseRiskManagement = true;
-  input double MaxRiskPercent = 2.0;
+Контракты:
+- MarketData: Refresh(); ATR/EMA/RSI(tf,period,shift)
+- PivotEngine: Get(tf)->{High,Low,lastSwing,ts}
+- TrendEngine: Get(tf)->{dir,strength}
+- Breakout: H1Confirmed(); RetestOK()
+- Filters: Get()->{downgrade:int, block:bool, reasons:string}
+- Signals: DecideAndUpdate()->{klass,price,time,note}
+- Draw/Panel: только отображение
 
-Код‑требования (MQL5)
-- Структура: OnInit/OnCalculate + легковесные кэши для pivot/объёмов; никаких блокирующих операций в OnCalculate.
-- Считать только закрытые бары для объема/сигналов.
-- Минимизировать аллокации/копирование в каждом тике; переиспользовать буферы.
-- Никакого “перерисовывания” сигналов; хранить состояния для баров.
-- Название индикатора в Market Watch: “MasterForex‑V MultiTF v8.2308”.
+## Жёсткие правила
+1) Решения только по закрытым барам (shift=1). Ноль репейнта.
+2) Разделение: расчёты ≠ сигналы ≠ фильтры ≠ отрисовка.
+3) Без глобальных статиков с побочками.
+4) Не плодить графические объекты, стабильный нейминг MFV_* и реюз.
+5) Copy*/iCustom — с проверкой возвратов и ограниченным окном истории.
+6) В OnCalculate: Refresh → UpdateAllTF → Update → Decide → Draw → Panel.
+7) Выводить полный компилируемый код файлов, без сокращений и псевдокода.
 
-Инфопанель (минимум)
-- Тренд H1/M15/M5, pivot уровня, сила тренда 1–3, объём (M5/M15/H1 с галочками), статус сессии.
+## Подтверждение/ретест
+- Подтверждение пробоя: N закрытий H1 над/под dual-pivot(H1).
+- Ретест: касание pivot на M15/M5 в окне W баров с допуском по ATR(k1,k2), затем возврат закрытием.
+- Классы сигналов: Early/Normal/Strong; Exit/Reverse.
+- Фильтры: Volume, Session, Clinch, MarketPhase, Consensus.
 
-Python/тестирование
-- `strategy_test_v82308.py` и CSV из репозитория использовать как есть (не переписывать данные).
-- Проверять согласованность сигналов индикатора с правилами выше.
+## Golden Master
+CSV: time,tf,price,pivotH,pivotL,trend,sig,note. Совпадение ≥95% в тестовом окне.
 
-Нефункциональные требования
-- Понятные названия, лаконичные комментарии (ru/en), соответствие README.
-- Не превращать индикатор в советник. Не удалять существующие inputs. Сохранять обратно совместимость.
-
-Формат ответа
-- При изменениях — показать конкретные правки в `MasterForex_Pivot_my_v82308.mq5`/`ZigZag.mq5`/`strategy_test_v82308.py`.
-- Краткие обоснования около правок, без лишней болтовни. Код — готовый к вставке.
+## Производительность
+EventSetTimer(1) для панели; тяжёлое в OnCalculate на закрытых барах.
 
