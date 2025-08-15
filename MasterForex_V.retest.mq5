@@ -3575,3 +3575,41 @@ void ComputeBuffers(const ENUM_TIMEFRAMES tf, double &breakBuf, double &retestTo
       retestTol *= NewsMode_Mul;
    }
 }
+
+// --- Breakout detectors on closed M15 bar (no repaint)
+bool DetectBreakUp_M15(const double pivotH, const double breakBuf)
+{
+   if(pivotH <= 0.0 || breakBuf <= 0.0) return false;
+   // use strictly closed bar
+   double c1 = iClose(_Symbol, PERIOD_M15, 1);
+   if(!MathIsValidNumber(c1) || c1<=0.0) return false;
+   if(S_M15.state == BreakUp) return false;
+   if(c1 > (pivotH + breakBuf))
+   {
+      S_M15.lastBreakTime   = iTime(_Symbol, PERIOD_M15, 1);
+      S_M15.lastBreakLevel  = pivotH;
+      S_M15.state           = BreakUp;
+      S_M15.retestOkPrinted = false;
+      S_M15.labelBarIndex   = -1;
+      return true;
+   }
+   return false;
+}
+
+bool DetectBreakDn_M15(const double pivotL, const double breakBuf)
+{
+   if(pivotL <= 0.0 || breakBuf <= 0.0) return false;
+   double c1 = iClose(_Symbol, PERIOD_M15, 1);
+   if(!MathIsValidNumber(c1) || c1<=0.0) return false;
+   if(S_M15.state == BreakDn) return false;
+   if(c1 < (pivotL - breakBuf))
+   {
+      S_M15.lastBreakTime   = iTime(_Symbol, PERIOD_M15, 1);
+      S_M15.lastBreakLevel  = pivotL;
+      S_M15.state           = BreakDn;
+      S_M15.retestOkPrinted = false;
+      S_M15.labelBarIndex   = -1;
+      return true;
+   }
+   return false;
+}
