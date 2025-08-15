@@ -2294,8 +2294,12 @@ void CleanupLegacyLabels()
 // Единый рендер заголовка и панели построчно (каждая строка — отдельный лейбл)
 void DrawPanel(const string headerText,const string bodyText)
 {
-  // Заголовок
-  UpsertLabel(MFV_HEADER, CORNER_LEFT_UPPER, 6, PanelTopOffset, headerText, 10, clrWhite, false);
+  // Геометрия строки
+  const int stepY  = (int)MathRound(10*1.4) + PanelLineGap;
+
+  // Заголовок (смещаем на одну строку вниз, чтобы не перекрывать системные подписи графика)
+  const int headerY = PanelTopOffset + stepY;
+  UpsertLabel(MFV_HEADER, CORNER_LEFT_UPPER, 6, headerY, headerText, 10, clrWhite, false);
 
   // Удалим предыдущие строки панели
   int total = ObjectsTotal(0,0,-1);
@@ -2306,8 +2310,7 @@ void DrawPanel(const string headerText,const string bodyText)
   }
 
   // Базовая вертикаль для первой строки
-  const int bodyY0 = PanelTopOffset + (int)MathRound(10*1.4) + PanelLineGap;
-  const int stepY  = (int)MathRound(10*1.4) + PanelLineGap;
+  const int bodyY0 = headerY + stepY;
 
   // Разбиваем тело на строки и рисуем построчно
   string rows[]; int n=0;
