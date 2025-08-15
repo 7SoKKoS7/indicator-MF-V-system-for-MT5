@@ -77,4 +77,4 @@ MQL5/Profiles/
 # Keep data and sources tracked (do NOT ignore)
 !*.mq5
 # CSV файлы оставляем в репозитории (нет общего правила *.csv)
-
+data/**
