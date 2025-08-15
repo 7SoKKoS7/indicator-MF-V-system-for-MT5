@@ -50,6 +50,10 @@ input double Dev_M5    = 5.0, Dev_M15   = 7.0, Dev_H1   = 12.0, Dev_H4   = 20.0,
 input group "=== Толеранс тренда (ATR) ==="
 input double TrendTolAtrK = 0.10;             // Толеранс сравнения цены с pivot: k * ATR(H1)
 
+input group "=== Тонкая настройка тренда ==="
+input double TrendFallbackK = 2.0;            // множитель толеранса для fallback
+input int    MinZZDepth_M15 = 12, MinZZDepth_M5 = 12; // защита от слишком частых свингов
+
 input group "=== Pivot confirmation (MF-V) ==="
 input bool   UseFractalConfirm = true;
 input int    PivotLeftBars = 2;         // фрактал слева
@@ -296,19 +300,6 @@ struct TFPivots
 };
 
 static TFPivots pivH1, pivM15, pivM5, pivH4, pivD1;
-// Helper: get cache ref by timeframe
-TFPivots* PivotCacheByTF(const ENUM_TIMEFRAMES tf)
-{
-   switch(tf)
-   {
-      case PERIOD_H1:  return &pivH1;
-      case PERIOD_M15: return &pivM15;
-      case PERIOD_M5:  return &pivM5;
-      case PERIOD_H4:  return (UseTF_H4? &pivH4 : NULL);
-      case PERIOD_D1:  return (UseTF_D1? &pivD1 : NULL);
-      default:         return NULL;
-   }
-}
 static datetime pivotsLastUpdate = 0;
 static bool pivotsEverReady = false; // станет true, когда H1/M15/M5 получат оба уровня H/L
 
@@ -1261,8 +1252,9 @@ TrendDir DetermineTrendTF(const ENUM_TIMEFRAMES TF,
    if(pivotHigh>0.0 && closeTF < (pivotHigh - tol) && lastSwingDown) { if(DebugTrend) PrintFormat("[TF=%d] close=%.*f pL=%.*f pH=%.*f swingUp=%d swingDn=%d tol=%.1f -> Down", (int)TF, _Digits, closeTF, _Digits, pivotLow, _Digits, pivotHigh, (int)lastSwingUp, (int)lastSwingDown, ToPips(tol)); return Trend_Down; }
 
    // Fallback to avoid prolonged flat if swing has not updated yet
-   if(pivotLow>0.0 && closeTF > (pivotLow + 2.0*tol) && !lastSwingDown)  { if(DebugTrend) PrintFormat("[TF=%d] close=%.*f pL=%.*f pH=%.*f swingUp=%d swingDn=%d tol=%.1f -> Up(fallback)", (int)TF, _Digits, closeTF, _Digits, pivotLow, _Digits, pivotHigh, (int)lastSwingUp, (int)lastSwingDown, ToPips(tol)); return Trend_Up; }
-   if(pivotHigh>0.0 && closeTF < (pivotHigh - 2.0*tol) && !lastSwingUp)  { if(DebugTrend) PrintFormat("[TF=%d] close=%.*f pL=%.*f pH=%.*f swingUp=%d swingDn=%d tol=%.1f -> Down(fallback)", (int)TF, _Digits, closeTF, _Digits, pivotLow, _Digits, pivotHigh, (int)lastSwingUp, (int)lastSwingDown, ToPips(tol)); return Trend_Down; }
+   double ftol = TrendFallbackK * tol;
+   if(pivotLow>0.0 && closeTF > (pivotLow + ftol) && !lastSwingDown)  { if(DebugTrend) PrintFormat("[TF=%d] close=%.*f pL=%.*f pH=%.*f swingUp=%d swingDn=%d tol=%.1f -> Up(fallback)", (int)TF, _Digits, closeTF, _Digits, pivotLow, _Digits, pivotHigh, (int)lastSwingUp, (int)lastSwingDown, ToPips(ftol)); return Trend_Up; }
+   if(pivotHigh>0.0 && closeTF < (pivotHigh - ftol) && !lastSwingUp)  { if(DebugTrend) PrintFormat("[TF=%d] close=%.*f pL=%.*f pH=%.*f swingUp=%d swingDn=%d tol=%.1f -> Down(fallback)", (int)TF, _Digits, closeTF, _Digits, pivotLow, _Digits, pivotHigh, (int)lastSwingUp, (int)lastSwingDown, ToPips(ftol)); return Trend_Down; }
 
    if(DebugTrend) PrintFormat("[TF=%d] close=%.*f pL=%.*f pH=%.*f swingUp=%d swingDn=%d tol=%.1f -> Flat", (int)TF, _Digits, closeTF, _Digits, pivotLow, _Digits, pivotHigh, (int)lastSwingUp, (int)lastSwingDown, ToPips(tol));
    return Trend_Flat;
