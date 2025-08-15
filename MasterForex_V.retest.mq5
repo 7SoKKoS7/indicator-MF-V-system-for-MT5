@@ -146,6 +146,7 @@ input int    MinBarsBetweenArrows = 6;        // Минимум баров ме�
 input group "=== Логирование ==="
 input bool   VerboseLogs = false;             // Подробные логи (инициализация/обновления пивотов)
 input bool   DebugLogs   = false;             // Отладочная цепочка решений (1 раз на бар)
+input bool   DebugTrend  = false;             // Логи расчёта тренда по TF
 input bool   DebugReplay = false;             // Пошаговая печать последовательности событий ретеста
 
 input group "=== ATR / Noise Label ==="
@@ -1256,13 +1257,14 @@ TrendDir DetermineTrendTF(const ENUM_TIMEFRAMES TF,
                           const double closeTF,
                           const double tol)
 {
-   if(pivotLow>0.0 && closeTF > (pivotLow + tol) && lastSwingUp)   return Trend_Up;
-   if(pivotHigh>0.0 && closeTF < (pivotHigh - tol) && lastSwingDown) return Trend_Down;
+   if(pivotLow>0.0 && closeTF > (pivotLow + tol) && lastSwingUp)   { if(DebugTrend) PrintFormat("[TF=%d] close=%.*f pL=%.*f pH=%.*f swingUp=%d swingDn=%d tol=%.1f -> Up", (int)TF, _Digits, closeTF, _Digits, pivotLow, _Digits, pivotHigh, (int)lastSwingUp, (int)lastSwingDown, ToPips(tol)); return Trend_Up; }
+   if(pivotHigh>0.0 && closeTF < (pivotHigh - tol) && lastSwingDown) { if(DebugTrend) PrintFormat("[TF=%d] close=%.*f pL=%.*f pH=%.*f swingUp=%d swingDn=%d tol=%.1f -> Down", (int)TF, _Digits, closeTF, _Digits, pivotLow, _Digits, pivotHigh, (int)lastSwingUp, (int)lastSwingDown, ToPips(tol)); return Trend_Down; }
 
    // Fallback to avoid prolonged flat if swing has not updated yet
-   if(pivotLow>0.0 && closeTF > (pivotLow + 2.0*tol) && !lastSwingDown)  return Trend_Up;
-   if(pivotHigh>0.0 && closeTF < (pivotHigh - 2.0*tol) && !lastSwingUp)  return Trend_Down;
+   if(pivotLow>0.0 && closeTF > (pivotLow + 2.0*tol) && !lastSwingDown)  { if(DebugTrend) PrintFormat("[TF=%d] close=%.*f pL=%.*f pH=%.*f swingUp=%d swingDn=%d tol=%.1f -> Up(fallback)", (int)TF, _Digits, closeTF, _Digits, pivotLow, _Digits, pivotHigh, (int)lastSwingUp, (int)lastSwingDown, ToPips(tol)); return Trend_Up; }
+   if(pivotHigh>0.0 && closeTF < (pivotHigh - 2.0*tol) && !lastSwingUp)  { if(DebugTrend) PrintFormat("[TF=%d] close=%.*f pL=%.*f pH=%.*f swingUp=%d swingDn=%d tol=%.1f -> Down(fallback)", (int)TF, _Digits, closeTF, _Digits, pivotLow, _Digits, pivotHigh, (int)lastSwingUp, (int)lastSwingDown, ToPips(tol)); return Trend_Down; }
 
+   if(DebugTrend) PrintFormat("[TF=%d] close=%.*f pL=%.*f pH=%.*f swingUp=%d swingDn=%d tol=%.1f -> Flat", (int)TF, _Digits, closeTF, _Digits, pivotLow, _Digits, pivotHigh, (int)lastSwingUp, (int)lastSwingDown, ToPips(tol));
    return Trend_Flat;
 }
 
@@ -1995,17 +1997,16 @@ void AnalyzeVolumeOnMasterForexTimeframes(VolumeAnalysis &analysis)
 //+------------------------------------------------------------------+
 int CalculateTrendStrength(int trendH1, int trendM15, int trendM5, int trendH4, int trendD1)
 {
-   int strength = 0;
-   
-   // Базовые таймфреймы
-   if(trendH1 == trendM15 && trendH1 == trendM5 && trendH1 != 0) strength += 2;
-   else if(trendH1 == trendM15 || trendH1 == trendM5) strength += 1;
-   
-   // Высшие таймфреймы
-   if(trendH1 == trendH4 && trendH1 != 0) strength += 1;
-   if(trendH1 == trendD1 && trendH1 != 0) strength += 1;
-   
-   return MathMin(strength, 3);
+   // Сила тренда рассчитываем по базовой тройке (H1/M15/M5) как число совпадений направления
+   // при этом не допускаем 0/3, если H1 уже имеет направление
+   int a = trendH1, b = trendM15, c = trendM5;
+   int sum = a + b + c;
+   int dir = 0;
+   if(sum>0) dir = +1; else if(sum<0) dir = -1; else { if(a!=0) dir=a; else if(b!=0) dir=b; else if(c!=0) dir=c; else dir=0; }
+   int matches = 0;
+   if(dir!=0) matches = (a==dir) + (b==dir) + (c==dir);
+   if(matches==0 && a!=0) matches = 1; // не оставлять 0/3, когда H1 уже задан
+   return MathMin(3, MathMax(0, matches));
 }
 
 //+------------------------------------------------------------------+
@@ -2828,11 +2829,11 @@ int OnCalculate(const int rates_total,
 
    // Trend for M15/M5 via unified function and ATR tolerance
    double tol = AtrTolH1();
-   // Compute last swing direction via ZZ, then convert to booleans
-   int sw15 = GetLastSwingDirZZ(PERIOD_M15);
-   bool swingUp15 = (sw15 > 0), swingDn15 = (sw15 < 0);
-   int sw5  = GetLastSwingDirZZ(PERIOD_M5);
-   bool swingUp5  = (sw5 > 0),  swingDn5  = (sw5 < 0);
+   // Last swing from confirmed dual-pivot cache (без кандидатов)
+   bool swingUp15 = (pivM15.lastSwing == +1);
+   bool swingDn15 = (pivM15.lastSwing == -1);
+   bool swingUp5  = (pivM5.lastSwing  == +1);
+   bool swingDn5  = (pivM5.lastSwing  == -1);
 
    // Compute buffers
    double bbM15=0.0, rtM15=0.0; ComputeBuffers(PERIOD_M15, bbM15, rtM15);
@@ -3673,6 +3674,11 @@ double AutoNoisePips()
 //   After BREAK (any), no bar satisfies touch+close within K bars and no fail; expect WAIT line, no labels.
 // Case D (NewsMode buffers):
 //   NewsMode=true increases break/retest buffers by NewsMode_Mul, so OK detection is stricter; panel RT row shows same buf/tol in pips.
+
+// Trend unit pseudo-cases:
+//   1) closeTF > pivotLow + 3*tol, lastSwingUp=true                => Trend_Up
+//   2) closeTF < pivotHigh - 3*tol, lastSwingDown=true             => Trend_Down
+//   3) closeTF > pivotLow + 3*tol, swingUp=false, swingDown=false  => Trend_Up (fallback)
 
 // --- Compute retest/break buffers for a timeframe per settings
 void ComputeBuffers(const ENUM_TIMEFRAMES tf, double &breakBuf, double &retestTol)
