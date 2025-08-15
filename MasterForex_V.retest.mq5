@@ -2053,6 +2053,15 @@ int OnInit()
    // Backfill UI полностью отключён — убедимся, что старый лейбл удалён
    ObjectDelete(0, "MFV_BACKFILL");
 
+   // Нормализация входных данных по ТФ: гарантируем историю M5/M15
+   {
+      MqlRates rM5[], rM15[];
+      ArraySetAsSeries(rM5, true);
+      ArraySetAsSeries(rM15, true);
+      if(CopyRates(_Symbol, PERIOD_M5, 0, 500, rM5) <= 0) return(INIT_FAILED);
+      if(CopyRates(_Symbol, PERIOD_M15, 0, 500, rM15) <= 0) return(INIT_FAILED);
+   }
+
    // Попытка загрузить кэш пивотов из глобальных переменных терминала (устойчивость при смене ТФ)
    if(LoadAllPivotsGV())
    {
@@ -2746,7 +2755,11 @@ int OnCalculate(const int rates_total,
    int trendM15 = 0;
    if(pivM15.high>0.0 && cM15 > (pivM15.high + bbM15_calc))      trendM15 = +1;
    else if(pivM15.low>0.0 && cM15 < (pivM15.low  - bbM15_calc))  trendM15 = -1;
-   int trendM5  = DetermineTrend(pivM5,  cM5);
+   // M5 trend strictly by close beyond pivot with break buffer
+   double bbM5_calc=0.0, tolM5_calc=0.0; ComputeBuffers(PERIOD_M5, bbM5_calc, tolM5_calc);
+   int trendM5  = 0;
+   if(pivM5.high>0.0 && cM5 > (pivM5.high + bbM5_calc))      trendM5 = +1;
+   else if(pivM5.low>0.0 && cM5 < (pivM5.low  - bbM5_calc))  trendM5 = -1;
    int trendH4  = 0, trendD1=0;
    if(UseTF_H4){ int shH4=ClosedShiftAtTime(PERIOD_H4, tAnchorM5); if(shH4>=1){ double cH4 = iClose(_Symbol, PERIOD_H4, shH4); trendH4 = DetermineTrend(pivH4, cH4); }}
    if(UseTF_D1){ int shD1=ClosedShiftAtTime(PERIOD_D1, tAnchorM5); if(shD1>=1){ double cD1 = iClose(_Symbol, PERIOD_D1, shD1); trendD1 = DetermineTrend(pivD1, cD1); }}
