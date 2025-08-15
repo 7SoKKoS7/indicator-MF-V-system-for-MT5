@@ -153,6 +153,13 @@ input int    LabelX           = 8;
 input int    LabelY           = 24;
 input color  LabelColor       = clrWhite;
 input int    LabelFontSize    = 10;
+input bool   ShowDebugATRObjects = false; // отладочные подписи ATR/ретеста на графике
+
+input group "=== Noise Label (pips/units) ==="
+enum PipMode { Pip_AutoFX, Pip_Point, Pip_Custom, Pip_Off };
+input PipMode PipSizeMode     = Pip_AutoFX;
+input double  PipCustomSize   = 0.00010;   // если Pip_Custom, размер pip в цене
+input string  NonFxUnits      = "USD";     // подпись единиц для не‑FX
 
 // Якорение стрелок к базовому ТФ, чтобы сигналы были одинаковыми на всех графиках
 enum AnchorMode { Anchor_Current, Anchor_M5 };
@@ -503,18 +510,32 @@ double GetATR(ENUM_TIMEFRAMES tf, int period)
    return 0.0;
 }
 
-// --- Pips/points helpers (consistent units)
-double ToPips(const double priceDelta)
+// Простое вычисление ATR (средний True Range) по закрытым барам как надёжный фоллбэк
+double ComputeATRManual(const ENUM_TIMEFRAMES tf, const int period)
 {
-   // Convert price delta to standard FX pips (4-digit for majors).
-   // On 5/3-digit symbols 1 pip = 10 points; on 4/2-digit symbols 1 pip = 1 point.
-   double pip = (_Digits==5 || _Digits==3) ? (10.0*_Point) : _Point;
-   return (_Point > 0.0 ? priceDelta / pip : 0.0);
+   int need = MathMax(period + 2, period + 16);
+   MqlRates r[]; ArraySetAsSeries(r, true);
+   int got = CopyRates(_Symbol, tf, 0, need, r);
+   if(got < period + 1) return 0.0;
+   double sumTR = 0.0;
+   for(int i=1; i<=period && i+1<got; ++i)
+   {
+      double high = r[i].high;
+      double low  = r[i].low;
+      double prevClose = r[i+1].close;
+      double tr = MathMax(high - low, MathMax(MathAbs(high - prevClose), MathAbs(low - prevClose)));
+      sumTR += tr;
+   }
+   return (sumTR > 0.0 ? (sumTR / (double)period) : 0.0);
 }
+
+// --- Pips/points helpers (consistent units)
+// legacy ToPips removed; see new PipSize-aware ToPips() below
 double FromPips(const double pips)
 {
-   double pip = (_Digits==5 || _Digits==3) ? (10.0*_Point) : _Point;
-   return pips * pip;
+   double ps = PipSize();
+   if(ps <= 0.0) ps = (_Point > 0.0 ? _Point : 1.0);
+   return pips * ps;
 }
 
 double RoundTo(const double v, const int digits)
@@ -525,6 +546,31 @@ double RoundTo(const double v, const int digits)
 string NOISE_LABEL()
 {
    return "MFV_NOISE_LABEL_" + IntegerToString(ChartID());
+}
+
+// --- Symbol helpers for pip size and units
+double SymPoint(){ double p=0.0; SymbolInfoDouble(_Symbol, SYMBOL_POINT, p); return p; }
+int    SymDigits(){ long d=0; SymbolInfoInteger(_Symbol, SYMBOL_DIGITS, d); return (int)d; }
+bool   IsForex(){ long m=0; if(!SymbolInfoInteger(_Symbol, SYMBOL_TRADE_CALC_MODE, m)) return false; return (m==SYMBOL_CALC_MODE_FOREX || m==SYMBOL_CALC_MODE_FOREX_NO_LEVERAGE); }
+double PipSize()
+{
+   if(PipSizeMode==Pip_Custom) return PipCustomSize;
+   if(PipSizeMode==Pip_Point)  return SymPoint();
+   if(PipSizeMode==Pip_Off)    return 0.0;
+   // Pip_AutoFX
+   if(IsForex())
+   {
+      int digits = SymDigits();
+      double point = SymPoint();
+      if(digits==5 || digits==3) return 10.0*point;
+      return point;
+   }
+   return 0.0; // not FX → pip off by default
+}
+double ToPips(double priceDelta)
+{
+   double ps = PipSize();
+   return (ps>0.0 ? priceDelta/ps : 0.0);
 }
 
 bool IsBreakoutConfirmed(double level, int direction, ENUM_TIMEFRAMES tf, double atrMult, int minCloseBars, double noiseMultM15, double noiseMultH1)
@@ -586,10 +632,10 @@ bool IsBreakoutConfirmed(double level, int direction, ENUM_TIMEFRAMES tf, double
    }
 
    // Визуальная подпись пробоя у уровня
-   if(ok)
+   if(ok && ShowDebugATRObjects)
    {
       datetime t = iTime(_Symbol, tf, 1);
-      string name = StringFormat("MF_BRK_%d_%d_%I64d", (int)tf, direction, (long)t);
+      string name = StringFormat("MFV_BRK_%d_%d_%I64d", (int)tf, direction, (long)t);
       if(ObjectFind(0, name) < 0)
       {
          string txt = StringFormat("+%.1fx ATR M15", atrMult);
@@ -900,15 +946,18 @@ bool CheckRetestBounce_M15(const double pivotH1Level, const int dir, datetime fr
                            TimeToString(t, TIME_DATE|TIME_MINUTES),
                            (wickOk?"✓":"✗"), (volOk?"✓":"✗"), ToPips(MathAbs(c - pivotH1Level)));
            }
-           string nm = StringFormat("MF_RT15_%I64d", (long)t);
-           if(ObjectFind(0, nm) < 0)
+           if(ShowDebugATRObjects)
            {
-               ObjectCreate(0, nm, OBJ_TEXT, 0, t, pivotH1Level);
-               ObjectSetInteger(0, nm, OBJPROP_COLOR, (dir>0?clrLime:clrRed));
-               ObjectSetInteger(0, nm, OBJPROP_FONTSIZE, 8);
-               string txt = UseRussian ? "retest ok" : "retest ok";
-               ObjectSetString(0, nm, OBJPROP_TEXT, txt);
-               ObjectSetInteger(0, nm, OBJPROP_BACK, true);
+               string nm = StringFormat("MFV_RT15_%I64d", (long)t);
+               if(ObjectFind(0, nm) < 0)
+               {
+                   ObjectCreate(0, nm, OBJ_TEXT, 0, t, pivotH1Level);
+                   ObjectSetInteger(0, nm, OBJPROP_COLOR, (dir>0?clrLime:clrRed));
+                   ObjectSetInteger(0, nm, OBJPROP_FONTSIZE, 8);
+                   string txt = UseRussian ? "retest ok" : "retest ok";
+                   ObjectSetString(0, nm, OBJPROP_TEXT, txt);
+                   ObjectSetInteger(0, nm, OBJPROP_BACK, true);
+               }
            }
            return true;
        }
@@ -960,15 +1009,18 @@ bool CheckRetestBounce_M5(const double pivotH1Level, const int dir, datetime fro
                            TimeToString(t, TIME_DATE|TIME_MINUTES),
                            (wickOk?"✓":"✗"), (volOk?"✓":"✗"), ToPips(MathAbs(c - pivotH1Level)));
            }
-           string nm = StringFormat("MF_RT5_%I64d", (long)t);
-           if(ObjectFind(0, nm) < 0)
+           if(ShowDebugATRObjects)
            {
-               ObjectCreate(0, nm, OBJ_TEXT, 0, t, pivotH1Level);
-               ObjectSetInteger(0, nm, OBJPROP_COLOR, (dir>0?clrLime:clrRed));
-               ObjectSetInteger(0, nm, OBJPROP_FONTSIZE, 8);
-               string txt = UseRussian ? "retest ok" : "retest ok";
-               ObjectSetString(0, nm, OBJPROP_TEXT, txt);
-               ObjectSetInteger(0, nm, OBJPROP_BACK, true);
+               string nm = StringFormat("MFV_RT5_%I64d", (long)t);
+               if(ObjectFind(0, nm) < 0)
+               {
+                   ObjectCreate(0, nm, OBJ_TEXT, 0, t, pivotH1Level);
+                   ObjectSetInteger(0, nm, OBJPROP_COLOR, (dir>0?clrLime:clrRed));
+                   ObjectSetInteger(0, nm, OBJPROP_FONTSIZE, 8);
+                   string txt = UseRussian ? "retest ok" : "retest ok";
+                   ObjectSetString(0, nm, OBJPROP_TEXT, txt);
+                   ObjectSetInteger(0, nm, OBJPROP_BACK, true);
+               }
            }
            return true;
        }
@@ -2267,6 +2319,33 @@ void DrawRowLabel(string name, string text, int y)
 
 // (removed) DrawBackfillStatus — backfill UI полностью удалён
 
+// Отрисовать строку NOISE под панелью, в общем порядке лейблов
+void DrawNoiseRow(const int y)
+{
+   // Удалим старый одиночный noise-лейбл, если был создан ранее
+   string old = NOISE_LABEL();
+   if(ObjectFind(0, old) >= 0) ObjectDelete(0, old);
+
+   double atrM15=0.0, atrH1=0.0, noise=0.0;
+   if(!GetATRsAndNoise(atrM15, atrH1, noise))
+   {
+      DrawRowLabel("MFV_STATUS_NOISE", "NOISE: NO DATA", y);
+      return;
+   }
+
+   int nd = MathMin(NoiseDecimals, SymDigits());
+   double nRound = NormalizeDouble(noise, nd);
+   double pips = ToPips(nRound);
+   bool fx = IsForex();
+   bool pipOff = (PipSizeMode==Pip_Off) || (!fx && PipSizeMode==Pip_AutoFX);
+   string txt;
+   if(pipOff)
+      txt = StringFormat("NOISE: %.*f %s", nd, nRound, NonFxUnits);
+   else
+      txt = StringFormat("NOISE: %.*f (%.1f pips)", nd, nRound, pips);
+   DrawRowLabel("MFV_STATUS_NOISE", txt, y);
+}
+
 //+------------------------------------------------------------------+
 //| Main calculation / Основной расчет                                |
 //+------------------------------------------------------------------+
@@ -3114,6 +3193,8 @@ int OnCalculate(const int rates_total,
          string consText = StringFormat("Consensus: %d/3 %s | [H1: %s %s | EMA(M15): %s %s | RSI(M15): %s]",
                                         votes, checkMark, arrowH1, coreMark, emaArrow, emaMark, rsiMark);
          DrawRowLabel("MFV_STATUS_CONS", consText, 250);
+         // noise row immediately under consensus
+         DrawNoiseRow(270);
       }
    }
 
@@ -3191,7 +3272,7 @@ int OnCalculate(const int rates_total,
        PruneAllSignalsToLastN(rates_total, 1);
    }
 
-   DrawNoiseLabel();
+   // Noise now rendered as a panel row under consensus (DrawNoiseRow)
    ChartRedraw();
 
    return(rates_total);
@@ -3204,21 +3285,24 @@ bool GetATRsAndNoise(double &atrM15, double &atrH1, double &noise)
    if(hATR_M15 == INVALID_HANDLE) hATR_M15 = iATR(_Symbol, PERIOD_M15, ATR_Period_M15);
    if(hATR_H1  == INVALID_HANDLE) hATR_H1  = iATR(_Symbol, PERIOD_H1,  ATR_Period_H1);
 
-   // Минимальный прогрев историй для устойчивого CopyBuffer
-   EnsureHistory(_Symbol, PERIOD_M15, MathMax(ATR_Period_M15*3, 50));
-   EnsureHistory(_Symbol, PERIOD_H1,  MathMax(ATR_Period_H1*3,  50));
+   // Прогреваем около недели истории, не «за все время»
+   const int needM15 = MathMax(7*96 + ATR_Period_M15 + 5, 300); // ~1 неделя M15
+   const int needH1  = MathMax(7*24 + ATR_Period_H1 + 5, 120);  // ~1 неделя H1
+   EnsureHistory(_Symbol, PERIOD_M15, needM15);
+   EnsureHistory(_Symbol, PERIOD_H1,  needH1);
 
    double b1[], b2[]; ArraySetAsSeries(b1, true); ArraySetAsSeries(b2, true);
-   int g1 = (hATR_M15!=INVALID_HANDLE) ? CopyBuffer(hATR_M15, 0, 0, 1, b1) : -1;
-   int g2 = (hATR_H1 !=INVALID_HANDLE) ? CopyBuffer(hATR_H1,  0, 0, 1, b2) : -1;
-   if(g1<=0 || !MathIsValidNumber(b1[0]) || b1[0]<=0.0) g1 = (hATR_M15!=INVALID_HANDLE) ? CopyBuffer(hATR_M15, 0, 1, 1, b1) : -1;
-   if(g2<=0 || !MathIsValidNumber(b2[0]) || b2[0]<=0.0) g2 = (hATR_H1 !=INVALID_HANDLE) ? CopyBuffer(hATR_H1,  0, 1, 1, b2) : -1;
+   int g1 = (hATR_M15!=INVALID_HANDLE) ? CopyBuffer(hATR_M15, 0, 1, 1, b1) : -1; // закрытый бар
+   int g2 = (hATR_H1 !=INVALID_HANDLE) ? CopyBuffer(hATR_H1,  0, 1, 1, b2) : -1; // закрытый бар
 
-   // Фоллбэки на однократное чтение ATR закрытого бара
    if(g1>0 && MathIsValidNumber(b1[0]) && b1[0] > 0.0) atrM15 = b1[0];
    else atrM15 = GetATR(PERIOD_M15, ATR_Period_M15);
    if(g2>0 && MathIsValidNumber(b2[0]) && b2[0] > 0.0) atrH1 = b2[0];
    else atrH1 = GetATR(PERIOD_H1, ATR_Period_H1);
+
+   // Дополнительный надёжный фоллбэк: ручной ATR по барам
+   if(atrM15 <= 0.0) atrM15 = ComputeATRManual(PERIOD_M15, ATR_Period_M15);
+   if(atrH1  <= 0.0) atrH1  = ComputeATRManual(PERIOD_H1,  ATR_Period_H1);
 
    if(atrM15<=0.0 && atrH1<=0.0) return false;
    noise  = MathMax(Noise_Mult_M15 * atrM15, Noise_Mult_H1 * atrH1);
@@ -3235,34 +3319,31 @@ void DrawNoiseLabel()
       ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0);
    }
 
-   // Refresh visual props each tick to reflect user changes
+   // Placement/appearance from inputs
    ObjectSetInteger(0, name, OBJPROP_BACK, true);
    ObjectSetInteger(0, name, OBJPROP_COLOR, LabelColor);
    ObjectSetInteger(0, name, OBJPROP_CORNER, LabelCorner);
    ObjectSetInteger(0, name, OBJPROP_XDISTANCE, LabelX);
-   int yAuto = 250 + (ShowDetails ? 40 : 20);
-   int yUse  = (LabelY <= 0 || LabelY == 24 ? yAuto : LabelY);
-   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, yUse);
+   ObjectSetInteger(0, name, OBJPROP_YDISTANCE, (LabelY<=0 ? 22 : LabelY));
    ObjectSetInteger(0, name, OBJPROP_FONTSIZE, LabelFontSize);
 
    double atrM15=0.0, atrH1=0.0, noise=0.0;
    if(!GetATRsAndNoise(atrM15, atrH1, noise))
    {
-      ObjectSetString(0, name, OBJPROP_TEXT, "NOISE: NO DATA (load M15/H1)");
-      if(DebugLogs) Print("[NOISE] no data: ATR handles/copy not ready");
+      ObjectSetString(0, name, OBJPROP_TEXT, "NOISE: NO DATA");
       return;
    }
 
-   double nRound = RoundTo(noise, NoiseDecimals);
-   string text = StringFormat("NOISE: %.*f  (%0.1f pips)",
-                              NoiseDecimals, nRound, ToPips(nRound));
-   if(ShowDetails)
-      text += StringFormat("\nATR(M15,%d)=%.5f | ATR(H1,%d)=%.5f\nmax(%.1fx, %.1fx)",
-                           ATR_Period_M15, atrM15,
-                           ATR_Period_H1,  atrH1,
-                           Noise_Mult_M15, Noise_Mult_H1);
-   // Нормализуем пробелы для соответствия образцу вывода
-   StringReplace(text, "  (", " (");
+   int nd = MathMin(NoiseDecimals, SymDigits());
+   double nRound = NormalizeDouble(noise, nd);
+   double pips = ToPips(nRound);
+   bool fx = IsForex();
+   bool pipOff = (PipSizeMode==Pip_Off) || (!fx && PipSizeMode==Pip_AutoFX);
+   string text;
+   if(pipOff)
+      text = StringFormat("NOISE: %.*f %s", nd, nRound, NonFxUnits);
+   else
+      text = StringFormat("NOISE: %.*f  (%.1f pips)", nd, nRound, pips);
 
    ObjectSetString(0, name, OBJPROP_TEXT, text);
 }
