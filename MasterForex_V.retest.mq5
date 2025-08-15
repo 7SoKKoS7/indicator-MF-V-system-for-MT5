@@ -273,6 +273,18 @@ static bool     dbgRetM15Ok   = false;
 static bool     dbgRetM15Vol  = false;
 static bool     dbgRetM5Ok    = false;
 
+// --- Retest non-repainting state (per TF, here for M15)
+enum BreakState { NoBreak, BreakUp, BreakDn };
+struct MfvRetestState
+{
+   datetime   lastBreakTime;
+   double     lastBreakLevel;
+   BreakState state;
+   int        labelBarIndex;
+   bool       retestOkPrinted;
+};
+static MfvRetestState S_M15;
+
 // --- Dual-pivot per timeframe (High/Low) non-repainting cache
 struct TFPivots
 {
@@ -2084,6 +2096,14 @@ int OnInit()
    Comment("");
    CleanupLegacyLabels();
 
+   // --- Init retest state (no-repaint): zero all fields
+   ZeroMemory(S_M15);
+   S_M15.lastBreakTime   = 0;
+   S_M15.lastBreakLevel  = 0.0;
+   S_M15.state           = NoBreak;
+   S_M15.labelBarIndex   = -1;
+   S_M15.retestOkPrinted = false;
+
    return(INIT_SUCCEEDED);
 }
 
@@ -2166,6 +2186,17 @@ void OnDeinit(const int reason)
 
     // Noise label cleanup
     ObjectDelete(0, NOISE_LABEL());
+
+    // Cleanup retest labels with prefix [RT_]
+    int total = ObjectsTotal(0, 0, -1);
+    for(int i=total-1; i>=0; --i)
+    {
+        string nm = ObjectName(0, i);
+        if(StringLen(nm) >= 4 && StringSubstr(nm, 0, 4) == "[RT_")
+        {
+            ObjectDelete(0, nm);
+        }
+    }
 }
 
 // (legacy single-pivot functions removed — using dual-pivot via ZigZag buffers)
