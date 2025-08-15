@@ -169,6 +169,18 @@ input PipMode PipSizeMode     = Pip_AutoFX;
 input double  PipCustomSize   = 0.00010;   // если Pip_Custom, размер pip в цене
 input string  NonFxUnits      = "USD";     // подпись единиц для не‑FX
 
+input group "=== Retest Settings ==="
+input int    ATR_Period         = 14;
+input double NoisePips_Override = 0.0;
+input double BreakBuf_ATR_Frac  = 0.25;
+input double RetestTol_ATR_Frac = 0.20;
+input double BreakBuf_NoiseMul  = 1.0;
+input double RetestTol_NoiseMul = 0.8;
+input int    Retest_MaxBars     = 3;
+input int    Label_TTL_Bars     = 6;
+input bool   NewsMode           = false;
+input double NewsMode_Mul       = 2.5;
+
 // --- Header/Panel identifiers and layout (top-left)
 #define MFV_HEADER "MFV_Header"
 #define MFV_PANEL  "MFV_Panel"
@@ -586,6 +598,16 @@ double ToPips(double priceDelta)
 {
    double ps = PipSize();
    return (ps>0.0 ? priceDelta/ps : 0.0);
+}
+
+// --- Convenience wrappers for pips/points conversion (pips <-> points)
+double Pips(const double points)
+{
+   return ToPips(points);
+}
+double Points(const double pips)
+{
+   return FromPips(pips);
 }
 
 bool IsBreakoutConfirmed(double level, int direction, ENUM_TIMEFRAMES tf, double atrMult, int minCloseBars, double noiseMultM15, double noiseMultH1)
@@ -3477,4 +3499,48 @@ void DrawNoiseLabel()
       text = StringFormat("NOISE: %.*f  (%.1f pips)", nd, nRound, pips);
 
    ObjectSetString(0, name, OBJPROP_TEXT, text);
+}
+
+// --- Retest helper: return current NOISE value in pips as displayed on panel/label
+double AutoNoisePips()
+{
+   // Prefer live computed noise via GetATRsAndNoise, then convert to pips
+   double a15=0.0, aH1=0.0, nz=0.0;
+   if(GetATRsAndNoise(a15, aH1, nz))
+   {
+      // nz is in price units, convert to pips
+      return ToPips(nz);
+   }
+   return 0.0;
+}
+
+// --- Compute retest/break buffers for a timeframe per settings
+void ComputeBuffers(const ENUM_TIMEFRAMES tf, double &breakBuf, double &retestTol)
+{
+   breakBuf = 0.0;
+   retestTol = 0.0;
+
+   // Resolve noise in points
+   double noisePts = 0.0;
+   if(NoisePips_Override > 0.0)
+      noisePts = Points(NoisePips_Override);
+   else
+      noisePts = Points(AutoNoisePips());
+
+   // ATR for timeframe
+   double atrTf = GetATR(tf, (ATR_Period>0?ATR_Period:14));
+
+   double bb1 = noisePts * BreakBuf_NoiseMul;
+   double bb2 = (atrTf>0.0 ? atrTf * BreakBuf_ATR_Frac : 0.0);
+   double rt1 = noisePts * RetestTol_NoiseMul;
+   double rt2 = (atrTf>0.0 ? atrTf * RetestTol_ATR_Frac : 0.0);
+
+   breakBuf  = MathMax(bb1, bb2);
+   retestTol = MathMax(rt1, rt2);
+
+   if(NewsMode && NewsMode_Mul>0.0)
+   {
+      breakBuf  *= NewsMode_Mul;
+      retestTol *= NewsMode_Mul;
+   }
 }
