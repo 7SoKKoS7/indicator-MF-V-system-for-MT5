@@ -24,6 +24,8 @@ input double RetestTolATR_M5      = 0.50;
 #include "include/Draw.mqh"
 #include "include/Panel.mqh"
 
+// GMLogger for Golden Master CSV
+#include "include/GMLogger.mqh"
 MFVConfig   gCfg;
 MFVState    gSt;
 MarketData  gMD;
@@ -34,6 +36,8 @@ Filters     gFL;
 Signals     gSG;
 DrawLayer   gDR;
 PanelView   gPV;
+
+GMLogger GM;
 
 int OnInit()
 {
@@ -47,6 +51,7 @@ int OnInit()
    gDR.Init(&gCfg);
    gPV.Init(&gCfg);
    EventSetTimer(1);
+   GM.Init("modular");
    return(INIT_SUCCEEDED);
 }
 
@@ -55,6 +60,15 @@ void OnDeinit(const int reason)
    EventKillTimer();
    gDR.Cleanup();
    gPV.Cleanup();
+   GM.Close();
+}
+
+// helper для строкового представления тренда
+static string _TrendStr(TrendDir d)
+{
+   if(d==TD_Up)   return "Up";
+   if(d==TD_Down) return "Down";
+   return "Flat";
 }
 
 int OnCalculate(const int rates_total,
@@ -69,6 +83,16 @@ int OnCalculate(const int rates_total,
    gBR.Update();
    gFL.Update();
    SignalDecision sd = gSG.DecideAndUpdate();
+   GM.LogRaw(
+      PERIOD_M15,
+      iTime(_Symbol, PERIOD_M15, 1),
+      SymbolInfoDouble(_Symbol, SYMBOL_BID),
+      gPE.Get(PERIOD_M15).High,
+      gPE.Get(PERIOD_M15).Low,
+      _TrendStr(gTE.Get(PERIOD_M15).dir),
+      EnumToString(sd.klass),
+      sd.note
+   );
    gDR.SyncPivots(gPE);
    gDR.DrawSignal(sd);
    return(rates_total);

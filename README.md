@@ -476,3 +476,50 @@ input bool     TrailByM15Pivot    = true;
 **Версия:** 9  
 **Совместимость:** MetaTrader 5  
 **Автор:** Основан на стратегии MasterForex-V
+
+## Структура репозитория (модульная ветка)
+MQL5/
+  Indicators/
+    MasterForex_V_legacy.mq5
+    MFV_Modular/
+      MFV_Modular.mq5
+      README.md
+      include/
+        Config.mqh
+        State.mqh
+        MarketData.mqh
+        PivotEngine.mqh
+        TrendEngine.mqh
+        Breakout.mqh
+        Filters.mqh
+        Signals.mqh
+        Draw.mqh
+        Panel.mqh
+        GMLogger.mqh
+Docs/
+  MFV_Modular_SPEC.md
+  MFV_Modular_SPEC.pdf
+  MFV_Modular_flow.png
+.vscode/
+  settings.json
+data/
+  EURUSDM1.csv
+  EURUSDM5.csv
+  EURUSDM15.csv
+  EURUSDM30.csv
+  EURUSDH1.csv
+  EURUSDH4.csv
+  EURUSDDaily.csv
+  EURUSDWeekly.csv
+  EURUSDMonthly.csv
+.cursorrules
+.cursorignore
+.gitignore
+README.md
+
+
+### Документация
+Все PDF/MD-спеки и схемы лежат в `/Docs/`.
+
+### Исторические CSV
+Все ряды формата `EURUSD*.csv` и подобные хранить в `/data/`. Эти файлы игнорируются Cursor согласно `.cursorignore`.
