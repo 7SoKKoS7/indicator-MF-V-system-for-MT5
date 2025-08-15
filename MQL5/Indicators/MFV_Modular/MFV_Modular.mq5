@@ -64,7 +64,7 @@ void OnDeinit(const int reason)
 }
 
 // helper для строкового представления тренда
-static string _TrendStr(TrendDir d)
+string MFV_TrendStr(TrendDir d)
 {
    if(d==TD_Up)   return "Up";
    if(d==TD_Down) return "Down";
@@ -89,7 +89,7 @@ int OnCalculate(const int rates_total,
       SymbolInfoDouble(_Symbol, SYMBOL_BID),
       gPE.Get(PERIOD_M15).High,
       gPE.Get(PERIOD_M15).Low,
-      _TrendStr(gTE.Get(PERIOD_M15).dir),
+      MFV_TrendStr(gTE.Get(PERIOD_M15).dir),
       EnumToString(sd.klass),
       sd.note
    );

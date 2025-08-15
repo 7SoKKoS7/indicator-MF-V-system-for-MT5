@@ -478,6 +478,7 @@ input bool     TrailByM15Pivot    = true;
 **Автор:** Основан на стратегии MasterForex-V
 
 ## Структура репозитория (модульная ветка)
+
 MQL5/
   Indicators/
     MasterForex_V_legacy.mq5
@@ -519,7 +520,7 @@ README.md
 
 
 ### Документация
-Все PDF/MD-спеки и схемы лежат в `/Docs/`.
+Все PDF/MD-спеки и схемы лежат в каталоге `/Docs/`.
 
 ### Исторические CSV
-Все ряды формата `EURUSD*.csv` и подобные хранить в `/data/`. Эти файлы игнорируются Cursor согласно `.cursorignore`.
+Все ряды формата `EURUSD*.csv` и подобные храним в `/data/`. Эти файлы игнорируются Cursor согласно `.cursorignore`.
