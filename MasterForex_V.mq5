@@ -166,6 +166,7 @@ input string  NonFxUnits      = "USD";     // подпись единиц для
 #define MFV_PANEL  "MFV_Panel"
 input int PanelTopOffset = 6;   // верхний отступ заголовка панели
 input int PanelLineGap   = 4;   // вертикальный зазор между строками
+input int PanelFontSize  = 11;  // размер шрифта панели/заголовка
 
 // Якорение стрелок к базовому ТФ, чтобы сигналы были одинаковыми на всех графиках
 enum AnchorMode { Anchor_Current, Anchor_M5 };
@@ -2232,7 +2233,7 @@ void DrawWarmupStatus(const bool okH1, const int haveH1, const int needH1,
       ObjectSetInteger(0, nm, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
       ObjectSetInteger(0, nm, OBJPROP_XDISTANCE, 10);
       ObjectSetInteger(0, nm, OBJPROP_YDISTANCE, 8);
-      ObjectSetInteger(0, nm, OBJPROP_FONTSIZE, 12);
+      ObjectSetInteger(0, nm, OBJPROP_FONTSIZE, PanelFontSize);
       ObjectSetInteger(0, nm, OBJPROP_BACK, false);
       ObjectSetInteger(0, nm, OBJPROP_COLOR, clrSilver);
    }
@@ -2295,11 +2296,11 @@ void CleanupLegacyLabels()
 void DrawPanel(const string headerText,const string bodyText)
 {
   // Геометрия строки
-  const int stepY  = (int)MathRound(10*1.4) + PanelLineGap;
+  const int stepY  = (int)MathRound(PanelFontSize*1.4) + PanelLineGap;
 
   // Заголовок (смещаем на одну строку вниз, чтобы не перекрывать системные подписи графика)
   const int headerY = PanelTopOffset + stepY;
-  UpsertLabel(MFV_HEADER, CORNER_LEFT_UPPER, 6, headerY, headerText, 10, clrWhite, false);
+  UpsertLabel(MFV_HEADER, CORNER_LEFT_UPPER, 6, headerY, headerText, PanelFontSize, clrWhite, false);
 
   // Удалим предыдущие строки панели
   int total = ObjectsTotal(0,0,-1);
@@ -2319,7 +2320,7 @@ void DrawPanel(const string headerText,const string bodyText)
   if(n<=0)
   {
     // если split не сработал — рисуем одной строкой как резерв
-    UpsertLabel("MFV_PANEL_L0", CORNER_LEFT_UPPER, 6, bodyY0, bodyText, 10, clrWhite, false);
+    UpsertLabel("MFV_PANEL_L0", CORNER_LEFT_UPPER, 6, bodyY0, bodyText, PanelFontSize, clrWhite, false);
   }
   else
   {
@@ -2327,7 +2328,7 @@ void DrawPanel(const string headerText,const string bodyText)
     {
       string nm = StringFormat("MFV_PANEL_L%d", i);
       int y = bodyY0 + i*stepY;
-      UpsertLabel(nm, CORNER_LEFT_UPPER, 6, y, rows[i], 10, clrWhite, false);
+      UpsertLabel(nm, CORNER_LEFT_UPPER, 6, y, rows[i], PanelFontSize, clrWhite, false);
     }
   }
 
