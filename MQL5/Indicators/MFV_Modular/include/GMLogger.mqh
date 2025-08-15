@@ -1,5 +1,7 @@
 // MQL5/Indicators/MFV_Modular/include/GMLogger.mqh
-#pragma once
+#ifndef __MFV_GMLOGGER_MQH__
+#define __MFV_GMLOGGER_MQH__
+
 #define MFV_GM_LOG 1   // 0 = отключить лог вообще на этапе сборки
 
 class GMLogger {
@@ -28,7 +30,7 @@ public:
                double pH, double pL, const string trend,
                const string sig, const string note)
    {
-   #if MFV_GM_LOG
+   #if defined(MFV_GM_LOG) && (MFV_GM_LOG!=0)
       if(h==INVALID_HANDLE) return;
       FileWrite(h,
          TimeToString(t, TIME_DATE|TIME_SECONDS),
@@ -40,3 +42,5 @@ public:
    #endif
    }
 };
+
+#endif // __MFV_GMLOGGER_MQH__

@@ -1,4 +1,6 @@
-#pragma once
+#ifndef __MFV_PIVOTENGINE_MQH__
+#define __MFV_PIVOTENGINE_MQH__
+
 struct DualPivot { double High; double Low; int lastSwing; datetime ts;
    DualPivot():High(0),Low(0),lastSwing(0),ts(0){} };
 
@@ -17,4 +19,4 @@ private:
    DualPivot computeForTf(ENUM_TIMEFRAMES tf){ DualPivot d; return d; }
 };
 
-
+#endif // __MFV_PIVOTENGINE_MQH__

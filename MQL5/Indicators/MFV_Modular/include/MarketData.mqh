@@ -1,4 +1,6 @@
-#pragma once
+#ifndef __MFV_MARKETDATA_MQH__
+#define __MFV_MARKETDATA_MQH__
+
 class MarketData {
    string sym; ENUM_TIMEFRAMES baseTf;
 public:
@@ -10,4 +12,4 @@ public:
    double RSI(ENUM_TIMEFRAMES tf, int period, int shift){ return 50.0; }
 };
 
-
+#endif // __MFV_MARKETDATA_MQH__

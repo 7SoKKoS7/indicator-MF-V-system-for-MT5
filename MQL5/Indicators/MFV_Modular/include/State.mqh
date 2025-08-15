@@ -1,4 +1,6 @@
-#pragma once
+#ifndef __MFV_STATE_MQH__
+#define __MFV_STATE_MQH__
+
 enum TrendDir { TD_Flat=0, TD_Up=1, TD_Down=2 };
 
 struct TFTrend { TrendDir dir; int strength; datetime ts;
@@ -21,4 +23,4 @@ struct MFVState {
    MFVState():lastArrowTime(0),lastReverseTime(0),lastStatus(""){}
 };
 
-
+#endif // __MFV_STATE_MQH__

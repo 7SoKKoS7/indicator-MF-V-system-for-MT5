@@ -1,4 +1,6 @@
-#pragma once
+#ifndef __MFV_TRENDENGINE_MQH__
+#define __MFV_TRENDENGINE_MQH__
+
 class TrendEngine {
    PivotEngine *pe; MFVConfig *cfg;
    TFTrend h1, m15, m5;
@@ -13,4 +15,4 @@ public:
    int TrendStrength() const { return 0; }
 };
 
-
+#endif // __MFV_TRENDENGINE_MQH__

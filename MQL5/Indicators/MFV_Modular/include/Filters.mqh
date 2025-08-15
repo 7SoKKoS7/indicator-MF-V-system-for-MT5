@@ -1,4 +1,6 @@
-#pragma once
+#ifndef __MFV_FILTERS_MQH__
+#define __MFV_FILTERS_MQH__
+
 class Filters {
    MarketData *md; MFVConfig *cfg; FilterVerdict verdict;
 public:
@@ -7,4 +9,4 @@ public:
    FilterVerdict Get() const { return verdict; }
 };
 
-
+#endif // __MFV_FILTERS_MQH__

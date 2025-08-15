@@ -1,4 +1,6 @@
-#pragma once
+#ifndef __MFV_CONFIG_MQH__
+#define __MFV_CONFIG_MQH__
+
 struct MFVConfig {
    bool   UseRussian;
    bool   EnableVolumeFilter;
@@ -23,4 +25,4 @@ struct MFVConfig {
    }
 };
 
-
+#endif // __MFV_CONFIG_MQH__

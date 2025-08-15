@@ -1,4 +1,6 @@
-#pragma once
+#ifndef __MFV_DRAW_MQH__
+#define __MFV_DRAW_MQH__
+
 class DrawLayer {
    MFVConfig *cfg;
 public:
@@ -8,4 +10,4 @@ public:
    void Cleanup(){ }
 };
 
-
+#endif // __MFV_DRAW_MQH__

@@ -1,4 +1,6 @@
-#pragma once
+#ifndef __MFV_BREAKOUT_MQH__
+#define __MFV_BREAKOUT_MQH__
+
 class Breakout {
    PivotEngine *pe; MarketData *md; MFVConfig *cfg;
    bool h1Confirmed, retestOk;
@@ -10,4 +12,4 @@ public:
    bool RetestOK()   const { return retestOk; }
 };
 
-
+#endif // __MFV_BREAKOUT_MQH__

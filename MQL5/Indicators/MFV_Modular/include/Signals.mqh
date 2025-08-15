@@ -1,4 +1,6 @@
-#pragma once
+#ifndef __MFV_SIGNALS_MQH__
+#define __MFV_SIGNALS_MQH__
+
 class Signals {
    TrendEngine *te; Breakout *br; Filters *fl; MFVConfig *cfg; MFVState *st;
 public:
@@ -9,4 +11,4 @@ public:
    }
 };
 
-
+#endif // __MFV_SIGNALS_MQH__
