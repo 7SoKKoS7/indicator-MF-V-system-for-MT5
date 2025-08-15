@@ -284,6 +284,7 @@ struct MfvRetestState
    bool       retestOkPrinted;
 };
 static MfvRetestState S_M15;
+static int S_M15_LastStatus = 0; // -1 FAIL, 0 WAIT, +1 OK
 
 // --- Dual-pivot per timeframe (High/Low) non-repainting cache
 struct TFPivots
@@ -2103,6 +2104,7 @@ int OnInit()
    S_M15.state           = NoBreak;
    S_M15.labelBarIndex   = -1;
    S_M15.retestOkPrinted = false;
+   S_M15_LastStatus      = 0;
 
    return(INIT_SUCCEEDED);
 }
@@ -3262,6 +3264,16 @@ int OnCalculate(const int rates_total,
    else if(firedEarlyExit) signalText = (UseRussian ? "Сигнал: Ранний выход" : "Signal: Early EXIT");
    else if(firedHardExit)  signalText = (UseRussian ? "Сигнал: Выход (H1 Pivot)" : "Signal: HARD EXIT");
    else if(firedReversal)  signalText = (UseRussian ? "Сигнал: Разворот" : "Signal: Reversal");
+
+   // --- Retest panel row: RT: (OK|WAIT|FAIL) | buf=XX pips | tol=YY pips
+   double breakBufRow=0.0, retestTolRow=0.0; ComputeBuffers(PERIOD_M15, breakBufRow, retestTolRow);
+   double bufPips = ToPips(breakBufRow);
+   double tolPips = ToPips(retestTolRow);
+   string rtState = "WAIT";
+   if(S_M15_LastStatus>0) rtState = (UseRussian?"OK":"OK");
+   else if(S_M15_LastStatus<0) rtState = (UseRussian?"FAIL":"FAIL");
+   else rtState = (UseRussian?"WAIT":"WAIT");
+   string rtRow = StringFormat("RT: %s | buf=%.1f pips | tol=%.1f pips", rtState, bufPips, tolPips);
    // Доп. пояснение: если сработал выход по M5‑пивоту, добавим пометку на панель
    if(firedHardExit && lastSignal==0)
    {
@@ -3373,6 +3385,7 @@ int OnCalculate(const int rates_total,
    bodyText += ("\n" + signalText);
    if(firedHardExit) { string exitNote = (UseRussian? "Exit by M5 pivot: ✓" : "Exit by M5 pivot: ✓"); bodyText += ("\n" + exitNote); }
    bodyText += ("\n" + clinchText);
+   bodyText += ("\n" + rtRow);
    if(dbgRetLastHas && retxtCached!="")
    {
       bodyText += ("\n" + retxtCached);
@@ -3614,6 +3627,25 @@ bool DetectBreakDn_M15(const double pivotL, const double breakBuf)
    return false;
 }
 
+// --- Visualize pivot status line and update panel text
+void PaintPivotStatus(const bool ok, const bool fail, const double level)
+{
+   if(level <= 0.0) return;
+   string name = "[RT_PIVOT_M15]";
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_HLINE, 0, 0, level);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, level);
+
+   color c = clrSilver; int w = 2; ENUM_LINE_STYLE st = STYLE_DOT;
+   if(ok){ c = clrLime; st = STYLE_SOLID; }
+   else if(fail){ c = clrRed; st = STYLE_SOLID; }
+   else { c = clrSilver; st = STYLE_DOT; }
+   ObjectSetInteger(0, name, OBJPROP_COLOR, c);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, w);
+   ObjectSetInteger(0, name, OBJPROP_STYLE, st);
+   ObjectSetInteger(0, name, OBJPROP_BACK, true);
+}
+
 // --- Evaluate retest after a recorded break on M15 (closed bars only)
 void EvaluateRetest_M15(const double pivotH, const double pivotL,
                         const double breakBuf, const double retestTol)
@@ -3688,6 +3720,9 @@ void EvaluateRetest_M15(const double pivotH, const double pivotL,
          }
          S_M15.retestOkPrinted = true;
          S_M15.labelBarIndex = idx;
+         S_M15_LastStatus = +1;
+         // Update pivot visualization
+         PaintPivotStatus(true, false, pivot);
          return; // do not continue scanning once OK is set
       }
 
@@ -3714,8 +3749,12 @@ void EvaluateRetest_M15(const double pivotH, const double pivotL,
             S_M15.retestOkPrinted = false;
             S_M15.state = NoBreak;
             S_M15.labelBarIndex = -1;
+            S_M15_LastStatus = -1;
+            PaintPivotStatus(false, true, pivot);
             return;
          }
       }
    }
+   // If reached here without OK/FAIL change, update line as WAIT
+   if(S_M15_LastStatus == 0) PaintPivotStatus(false, false, pivot);
 }
