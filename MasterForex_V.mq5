@@ -2291,14 +2291,44 @@ void CleanupLegacyLabels()
   for(int i=0;i<ArraySize(legacy);i++) if(ObjectFind(0,legacy[i])>=0) ObjectDelete(0,legacy[i]);
 }
 
-// Единый рендер заголовка и панели текста
+// Единый рендер заголовка и панели построчно (каждая строка — отдельный лейбл)
 void DrawPanel(const string headerText,const string bodyText)
 {
+  // Заголовок
   UpsertLabel(MFV_HEADER, CORNER_LEFT_UPPER, 6, PanelTopOffset, headerText, 10, clrWhite, false);
 
-  const int bodyY = PanelTopOffset + (int)MathRound(10*1.4) + PanelLineGap;
-  UpsertLabel(MFV_PANEL,  CORNER_LEFT_UPPER, 6, bodyY, bodyText,   10, clrWhite, false);
+  // Удалим предыдущие строки панели
+  int total = ObjectsTotal(0,0,-1);
+  for(int i=total-1;i>=0;i--)
+  {
+    string name = ObjectName(0,i);
+    if(StringLen(name)>=12 && StringFind(name, "MFV_PANEL_L") == 0) ObjectDelete(0, name);
+  }
 
+  // Базовая вертикаль для первой строки
+  const int bodyY0 = PanelTopOffset + (int)MathRound(10*1.4) + PanelLineGap;
+  const int stepY  = (int)MathRound(10*1.4) + PanelLineGap;
+
+  // Разбиваем тело на строки и рисуем построчно
+  string rows[]; int n=0;
+  ushort sep = '\n';
+  n = StringSplit(bodyText, sep, rows);
+  if(n<=0)
+  {
+    // если split не сработал — рисуем одной строкой как резерв
+    UpsertLabel("MFV_PANEL_L0", CORNER_LEFT_UPPER, 6, bodyY0, bodyText, 10, clrWhite, false);
+  }
+  else
+  {
+    for(int i=0;i<n;i++)
+    {
+      string nm = StringFormat("MFV_PANEL_L%d", i);
+      int y = bodyY0 + i*stepY;
+      UpsertLabel(nm, CORNER_LEFT_UPPER, 6, y, rows[i], 10, clrWhite, false);
+    }
+  }
+
+  // Подстраховка от наложений
   FixTopOverlap();
 }
 
