@@ -1,0 +1,22 @@
+*.csv
+*.xlsx
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.pdf
+
+# legacy и всё, что нельзя трогать
+MQL5/Indicators/MasterForex_V_legacy.mq5
+MQL5/Experts/**
+MQL5/Indicators/ZigZag.mq5
+MQL5/Indicators/MasterForex_V*.mq5
+MQL5/Indicators/MasterForex_V*_*.mq5
+
+# логи/временные
+results.txt
+strategy_test*.txt
+*.log
+.venv/
+__pycache__/
+

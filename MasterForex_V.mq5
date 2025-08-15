@@ -15,6 +15,10 @@
 #property indicator_buffers 9
 #property indicator_plots   9
 
+// --- Debug logging flag and helper (no variadic macros in MQL5)
+#define MFV_DEBUG 1
+void DBG(const string msg){ if(MFV_DEBUG) Print("[MFV] ", msg); }
+
 // --- Breakout confirmation settings
 enum ConfirmMode { Confirm_Off, Confirm_StrongOnly, Confirm_StrongAndNormal, Confirm_All };
 
@@ -45,6 +49,10 @@ input double Dev_M5    = 5.0, Dev_M15   = 7.0, Dev_H1   = 12.0, Dev_H4   = 20.0,
 
 input group "=== Толеранс тренда (ATR) ==="
 input double TrendTolAtrK = 0.10;             // Толеранс сравнения цены с pivot: k * ATR(H1)
+
+input group "=== Тонкая настройка тренда ==="
+input double TrendFallbackK = 2.0;            // множитель толеранса для fallback
+input int    MinZZDepth_M15 = 12, MinZZDepth_M5 = 12; // защита от слишком частых свингов
 
 input group "=== Pivot confirmation (MF-V) ==="
 input bool   UseFractalConfirm = true;
@@ -142,6 +150,8 @@ input int    MinBarsBetweenArrows = 6;        // Минимум баров ме�
 input group "=== Логирование ==="
 input bool   VerboseLogs = false;             // Подробные логи (инициализация/обновления пивотов)
 input bool   DebugLogs   = false;             // Отладочная цепочка решений (1 раз на бар)
+input bool   DebugTrend  = false;             // Логи расчёта тренда по TF
+input bool   DebugReplay = false;             // Пошаговая печать последовательности событий ретеста
 
 input group "=== ATR / Noise Label ==="
 input bool   ShowNoiseLabel   = true;
@@ -160,6 +170,18 @@ enum PipMode { Pip_AutoFX, Pip_Point, Pip_Custom, Pip_Off };
 input PipMode PipSizeMode     = Pip_AutoFX;
 input double  PipCustomSize   = 0.00010;   // если Pip_Custom, размер pip в цене
 input string  NonFxUnits      = "USD";     // подпись единиц для не‑FX
+
+input group "=== Retest Settings ==="
+input int    ATR_Period         = 14;
+input double NoisePips_Override = 0.0;
+input double BreakBuf_ATR_Frac  = 0.25;
+input double RetestTol_ATR_Frac = 0.20;
+input double BreakBuf_NoiseMul  = 1.0;
+input double RetestTol_NoiseMul = 0.8;
+input int    Retest_MaxBars     = 3;
+input int    Label_TTL_Bars     = 6;
+input bool   NewsMode           = false;
+input double NewsMode_Mul       = 2.5;
 
 // --- Header/Panel identifiers and layout (top-left)
 #define MFV_HEADER "MFV_Header"
@@ -252,6 +274,20 @@ static bool     dbgRetLastHas = false;
 static bool     dbgRetM15Ok   = false;
 static bool     dbgRetM15Vol  = false;
 static bool     dbgRetM5Ok    = false;
+
+// --- Retest non-repainting state (per TF, here for M15)
+enum BreakState { NoBreak, BreakUp, BreakDn };
+struct MfvRetestState
+{
+   datetime   lastBreakTime;
+   double     lastBreakLevel;
+   BreakState state;
+   int        labelBarIndex;
+   bool       retestOkPrinted;
+};
+static MfvRetestState S_M15;
+static int S_M15_LastStatus = 0; // -1 FAIL, 0 WAIT, +1 OK
+static datetime S_M15_OkForBreak = 0; // lastBreakTime for which OK was already printed
 
 // --- Dual-pivot per timeframe (High/Low) non-repainting cache
 struct TFPivots
@@ -517,6 +553,15 @@ double GetATR(ENUM_TIMEFRAMES tf, int period)
    return 0.0;
 }
 
+// Унифицированный толеранс по ATR(H1) для сравнений с pivot
+double AtrTolH1()
+{
+   double atr = GetATR(PERIOD_H1, 14);
+   if(atr <= 0.0) atr = GetATR_H1();
+   double tol = MathMax(2*_Point, (TrendTolAtrK>0.0 ? TrendTolAtrK * atr : 0.0));
+   return tol;
+}
+
 // Простое вычисление ATR (средний True Range) по закрытым барам как надёжный фоллбэк
 double ComputeATRManual(const ENUM_TIMEFRAMES tf, const int period)
 {
@@ -578,6 +623,16 @@ double ToPips(double priceDelta)
 {
    double ps = PipSize();
    return (ps>0.0 ? priceDelta/ps : 0.0);
+}
+
+// --- Convenience wrappers for pips/points conversion (pips <-> points)
+double Pips(const double points)
+{
+   return ToPips(points);
+}
+double Points(const double pips)
+{
+   return FromPips(pips);
 }
 
 bool IsBreakoutConfirmed(double level, int direction, ENUM_TIMEFRAMES tf, double atrMult, int minCloseBars, double noiseMultM15, double noiseMultH1)
@@ -1148,6 +1203,61 @@ int GetZZHandle(const ENUM_TIMEFRAMES tf)
       case PERIOD_D1:  return zzD1;
       default:         return INVALID_HANDLE;
    }
+}
+
+// Определение последнего свинга по двум последним точкам ZigZag (без репейнта, только закрытые бары)
+// Возврат: +1 (последний отрезок вверх), -1 (вниз), 0 (нет данных)
+int GetLastSwingDirZZ(const ENUM_TIMEFRAMES tf)
+{
+   int h = GetZZHandle(tf);
+   if(h==INVALID_HANDLE) return 0;
+   if(!EnsureZigZagReady(h)) return 0;
+
+   int bars = iBars(_Symbol, tf);
+   int closed = MathMax(0, bars-1);
+   if(closed <= 3) return 0;
+
+   int scan = MathMin(closed, GetScanBarsForTF(tf));
+   double m[]; ArraySetAsSeries(m, true);
+   int got = CopyBuffer(h, 0, 1, scan, m); // основной буфер, начиная с закрытого барa [1]
+   if(got <= 0) return 0;
+
+   int found = 0; double last = 0.0, prev = 0.0;
+   for(int i=0; i<got; ++i)
+   {
+      double v = m[i];
+      if(v!=0.0 && v!=EMPTY_VALUE && MathIsValidNumber(v))
+      {
+         if(found==0){ last = v; found = 1; }
+         else { prev = v; found = 2; break; }
+      }
+   }
+   if(found < 2) return 0;
+   if(last > prev) return +1;
+   if(last < prev) return -1;
+   return 0;
+}
+
+// Unified trend direction for any TF using dual-pivot, last swing and ATR tolerance (no repaint)
+enum TrendDir { Trend_Up, Trend_Down, Trend_Flat };
+TrendDir DetermineTrendTF(const ENUM_TIMEFRAMES TF,
+                          const double pivotLow,
+                          const double pivotHigh,
+                          const bool lastSwingUp,
+                          const bool lastSwingDown,
+                          const double closeTF,
+                          const double tol)
+{
+   if(pivotLow>0.0 && closeTF > (pivotLow + tol) && lastSwingUp)   { if(DebugTrend) PrintFormat("[TF=%d] close=%.*f pL=%.*f pH=%.*f swingUp=%d swingDn=%d tol=%.1f -> Up", (int)TF, _Digits, closeTF, _Digits, pivotLow, _Digits, pivotHigh, (int)lastSwingUp, (int)lastSwingDown, ToPips(tol)); return Trend_Up; }
+   if(pivotHigh>0.0 && closeTF < (pivotHigh - tol) && lastSwingDown) { if(DebugTrend) PrintFormat("[TF=%d] close=%.*f pL=%.*f pH=%.*f swingUp=%d swingDn=%d tol=%.1f -> Down", (int)TF, _Digits, closeTF, _Digits, pivotLow, _Digits, pivotHigh, (int)lastSwingUp, (int)lastSwingDown, ToPips(tol)); return Trend_Down; }
+
+   // Fallback to avoid prolonged flat if swing has not updated yet
+   double ftol = TrendFallbackK * tol;
+   if(pivotLow>0.0 && closeTF > (pivotLow + ftol) && !lastSwingDown)  { if(DebugTrend) PrintFormat("[TF=%d] close=%.*f pL=%.*f pH=%.*f swingUp=%d swingDn=%d tol=%.1f -> Up(fallback)", (int)TF, _Digits, closeTF, _Digits, pivotLow, _Digits, pivotHigh, (int)lastSwingUp, (int)lastSwingDown, ToPips(ftol)); return Trend_Up; }
+   if(pivotHigh>0.0 && closeTF < (pivotHigh - ftol) && !lastSwingUp)  { if(DebugTrend) PrintFormat("[TF=%d] close=%.*f pL=%.*f pH=%.*f swingUp=%d swingDn=%d tol=%.1f -> Down(fallback)", (int)TF, _Digits, closeTF, _Digits, pivotLow, _Digits, pivotHigh, (int)lastSwingUp, (int)lastSwingDown, ToPips(ftol)); return Trend_Down; }
+
+   if(DebugTrend) PrintFormat("[TF=%d] close=%.*f pL=%.*f pH=%.*f swingUp=%d swingDn=%d tol=%.1f -> Flat", (int)TF, _Digits, closeTF, _Digits, pivotLow, _Digits, pivotHigh, (int)lastSwingUp, (int)lastSwingDown, ToPips(tol));
+   return Trend_Flat;
 }
 
 // Сколько баров запрашивать для поиска последних подтверждённых H/L
@@ -1879,17 +1989,16 @@ void AnalyzeVolumeOnMasterForexTimeframes(VolumeAnalysis &analysis)
 //+------------------------------------------------------------------+
 int CalculateTrendStrength(int trendH1, int trendM15, int trendM5, int trendH4, int trendD1)
 {
-   int strength = 0;
-   
-   // Базовые таймфреймы
-   if(trendH1 == trendM15 && trendH1 == trendM5 && trendH1 != 0) strength += 2;
-   else if(trendH1 == trendM15 || trendH1 == trendM5) strength += 1;
-   
-   // Высшие таймфреймы
-   if(trendH1 == trendH4 && trendH1 != 0) strength += 1;
-   if(trendH1 == trendD1 && trendH1 != 0) strength += 1;
-   
-   return MathMin(strength, 3);
+   // Сила тренда рассчитываем по базовой тройке (H1/M15/M5) как число совпадений направления
+   // при этом не допускаем 0/3, если H1 уже имеет направление
+   int a = trendH1, b = trendM15, c = trendM5;
+   int sum = a + b + c;
+   int dir = 0;
+   if(sum>0) dir = +1; else if(sum<0) dir = -1; else { if(a!=0) dir=a; else if(b!=0) dir=b; else if(c!=0) dir=c; else dir=0; }
+   int matches = 0;
+   if(dir!=0) matches = (a==dir) + (b==dir) + (c==dir);
+   if(matches==0 && a!=0) matches = 1; // не оставлять 0/3, когда H1 уже задан
+   return MathMin(3, MathMax(0, matches));
 }
 
 //+------------------------------------------------------------------+
@@ -2012,6 +2121,15 @@ int OnInit()
    // Backfill UI полностью отключён — убедимся, что старый лейбл удалён
    ObjectDelete(0, "MFV_BACKFILL");
 
+   // Нормализация входных данных по ТФ: гарантируем историю M5/M15
+   {
+      MqlRates rM5[], rM15[];
+      ArraySetAsSeries(rM5, true);
+      ArraySetAsSeries(rM15, true);
+      if(CopyRates(_Symbol, PERIOD_M5, 0, 500, rM5) <= 0) return(INIT_FAILED);
+      if(CopyRates(_Symbol, PERIOD_M15, 0, 500, rM15) <= 0) return(INIT_FAILED);
+   }
+
    // Попытка загрузить кэш пивотов из глобальных переменных терминала (устойчивость при смене ТФ)
    if(LoadAllPivotsGV())
    {
@@ -2053,6 +2171,16 @@ int OnInit()
    // Очистка любых комментариев тестера/графика и устаревших лейблов
    Comment("");
    CleanupLegacyLabels();
+
+   // --- Init retest state (no-repaint): zero all fields
+   ZeroMemory(S_M15);
+   S_M15.lastBreakTime   = 0;
+   S_M15.lastBreakLevel  = 0.0;
+   S_M15.state           = NoBreak;
+   S_M15.labelBarIndex   = -1;
+   S_M15.retestOkPrinted = false;
+   S_M15_LastStatus      = 0;
+   S_M15_OkForBreak      = 0;
 
    return(INIT_SUCCEEDED);
 }
@@ -2136,6 +2264,17 @@ void OnDeinit(const int reason)
 
     // Noise label cleanup
     ObjectDelete(0, NOISE_LABEL());
+
+    // Cleanup retest labels with prefix [RT_]
+    int total = ObjectsTotal(0, 0, -1);
+    for(int i=total-1; i>=0; --i)
+    {
+        string nm = ObjectName(0, i);
+        if(StringLen(nm) >= 4 && StringSubstr(nm, 0, 4) == "[RT_")
+        {
+            ObjectDelete(0, nm);
+        }
+    }
 }
 
 // (legacy single-pivot functions removed — using dual-pivot via ZigZag buffers)
@@ -2679,8 +2818,24 @@ int OnCalculate(const int rates_total,
    double cM15 = iClose(_Symbol, PERIOD_M15, shM15_anchor);
    double cM5  = iClose(_Symbol, PERIOD_M5,  1);
    int trendH1  = DetermineTrend(pivH1,  cH1);
-   int trendM15 = DetermineTrend(pivM15, cM15);
-   int trendM5  = DetermineTrend(pivM5,  cM5);
+
+   // Trend for M15/M5 via unified function and ATR tolerance
+   double tol = AtrTolH1();
+   // Last swing from confirmed dual-pivot cache (без кандидатов)
+   bool swingUp15 = (pivM15.lastSwing == +1);
+   bool swingDn15 = (pivM15.lastSwing == -1);
+   bool swingUp5  = (pivM5.lastSwing  == +1);
+   bool swingDn5  = (pivM5.lastSwing  == -1);
+
+   // Compute buffers
+   double bbM15=0.0, rtM15=0.0; ComputeBuffers(PERIOD_M15, bbM15, rtM15);
+   double bbM5 =0.0, rtM5 =0.0; ComputeBuffers(PERIOD_M5,  bbM5,  rtM5);
+
+   // Use DetermineTrendTF
+   TrendDir td15 = DetermineTrendTF(PERIOD_M15, pivM15.low, pivM15.high, swingUp15, swingDn15, cM15, (tol + bbM15));
+   TrendDir td5  = DetermineTrendTF(PERIOD_M5,  pivM5.low,  pivM5.high,  swingUp5,  swingDn5,  cM5,  (tol + bbM5));
+   int trendM15 = (td15==Trend_Up ? +1 : (td15==Trend_Down ? -1 : 0));
+   int trendM5  = (td5 ==Trend_Up ? +1 : (td5 ==Trend_Down ? -1 : 0));
    int trendH4  = 0, trendD1=0;
    if(UseTF_H4){ int shH4=ClosedShiftAtTime(PERIOD_H4, tAnchorM5); if(shH4>=1){ double cH4 = iClose(_Symbol, PERIOD_H4, shH4); trendH4 = DetermineTrend(pivH4, cH4); }}
    if(UseTF_D1){ int shD1=ClosedShiftAtTime(PERIOD_D1, tAnchorM5); if(shD1>=1){ double cD1 = iClose(_Symbol, PERIOD_D1, shD1); trendD1 = DetermineTrend(pivD1, cD1); }}
@@ -3201,6 +3356,16 @@ int OnCalculate(const int rates_total,
    else if(firedEarlyExit) signalText = (UseRussian ? "Сигнал: Ранний выход" : "Signal: Early EXIT");
    else if(firedHardExit)  signalText = (UseRussian ? "Сигнал: Выход (H1 Pivot)" : "Signal: HARD EXIT");
    else if(firedReversal)  signalText = (UseRussian ? "Сигнал: Разворот" : "Signal: Reversal");
+
+   // --- Retest panel row: RT: (OK|WAIT|FAIL) | buf=XX pips | tol=YY pips
+   double breakBufRow=0.0, retestTolRow=0.0; ComputeBuffers(PERIOD_M15, breakBufRow, retestTolRow);
+   double bufPips = ToPips(breakBufRow);
+   double tolPips = ToPips(retestTolRow);
+   string rtState = "WAIT";
+   if(S_M15_LastStatus>0) rtState = (UseRussian?"OK":"OK");
+   else if(S_M15_LastStatus<0) rtState = (UseRussian?"FAIL":"FAIL");
+   else rtState = (UseRussian?"WAIT":"WAIT");
+   string rtRow = StringFormat("RT: %s | buf=%.1f pips | tol=%.1f pips", rtState, bufPips, tolPips);
    // Доп. пояснение: если сработал выход по M5‑пивоту, добавим пометку на панель
    if(firedHardExit && lastSignal==0)
    {
@@ -3303,6 +3468,12 @@ int OnCalculate(const int rates_total,
 
    // Единый рендер заголовка/панели
    string headerText = (UseRussian? "MasterForex-V MultiTF v9.0" : "MasterForex-V MultiTF v9.0");
+   if(NewsMode)
+   {
+      double nm = NewsMode_Mul;
+      string tag = StringFormat(" NEWS x%.1f", nm);
+      headerText += tag;
+   }
    string bodyText = trendStatus + "\n" + levelM5 + "\n" + levelM15 + "\n" + levelH1;
    if(UseTF_H4 && levelH4!="") bodyText += ("\n" + levelH4);
    if(UseTF_D1 && levelD1!="") bodyText += ("\n" + levelD1);
@@ -3312,6 +3483,7 @@ int OnCalculate(const int rates_total,
    bodyText += ("\n" + signalText);
    if(firedHardExit) { string exitNote = (UseRussian? "Exit by M5 pivot: ✓" : "Exit by M5 pivot: ✓"); bodyText += ("\n" + exitNote); }
    bodyText += ("\n" + clinchText);
+   bodyText += ("\n" + rtRow);
    if(dbgRetLastHas && retxtCached!="")
    {
       bodyText += ("\n" + retxtCached);
@@ -3469,4 +3641,253 @@ void DrawNoiseLabel()
       text = StringFormat("NOISE: %.*f  (%.1f pips)", nd, nRound, pips);
 
    ObjectSetString(0, name, OBJPROP_TEXT, text);
+}
+
+// --- Retest helper: return current NOISE value in pips as displayed on panel/label
+double AutoNoisePips()
+{
+   // Prefer live computed noise via GetATRsAndNoise, then convert to pips
+   double a15=0.0, aH1=0.0, nz=0.0;
+   if(GetATRsAndNoise(a15, aH1, nz))
+   {
+      // nz is in price units, convert to pips
+      return ToPips(nz);
+   }
+   return 0.0;
+}
+
+// --- Unit-like scenario comments for quick mental verification
+// Case A (OK):
+//   After BREAK_UP over pivotH+buf, within k<=Retest_MaxBars a bar touches (Low<=pivotH+retestTol)
+//   and closes back above (Close>=pivotH+0.5*noise). Expect: green "RETEST OK" once, state kept.
+// Case B (FAIL):
+//   After BREAK_UP, price closes back below pivotH-breakBuf before OK. Expect: red "RETEST FAIL", state reset.
+// Case C (No retest):
+//   After BREAK (any), no bar satisfies touch+close within K bars and no fail; expect WAIT line, no labels.
+// Case D (NewsMode buffers):
+//   NewsMode=true increases break/retest buffers by NewsMode_Mul, so OK detection is stricter; panel RT row shows same buf/tol in pips.
+
+// Trend unit pseudo-cases:
+//   1) closeTF > pivotLow + 3*tol, lastSwingUp=true                => Trend_Up
+//   2) closeTF < pivotHigh - 3*tol, lastSwingDown=true             => Trend_Down
+//   3) closeTF > pivotLow + 3*tol, swingUp=false, swingDown=false  => Trend_Up (fallback)
+
+// --- Compute retest/break buffers for a timeframe per settings
+void ComputeBuffers(const ENUM_TIMEFRAMES tf, double &breakBuf, double &retestTol)
+{
+   breakBuf = 0.0;
+   retestTol = 0.0;
+
+   // Resolve noise in points
+   double noisePts = 0.0;
+   if(NoisePips_Override > 0.0)
+      noisePts = Points(NoisePips_Override);
+   else
+      noisePts = Points(AutoNoisePips());
+
+   // ATR for timeframe
+   double atrTf = GetATR(tf, (ATR_Period>0?ATR_Period:14));
+
+   double bb1 = noisePts * BreakBuf_NoiseMul;
+   double bb2 = (atrTf>0.0 ? atrTf * BreakBuf_ATR_Frac : 0.0);
+   double rt1 = noisePts * RetestTol_NoiseMul;
+   double rt2 = (atrTf>0.0 ? atrTf * RetestTol_ATR_Frac : 0.0);
+
+   breakBuf  = MathMax(bb1, bb2);
+   retestTol = MathMax(rt1, rt2);
+
+   if(NewsMode && NewsMode_Mul>0.0)
+   {
+      breakBuf  *= NewsMode_Mul;
+      retestTol *= NewsMode_Mul;
+   }
+}
+
+// --- Breakout detectors on closed M15 bar (no repaint)
+bool DetectBreakUp_M15(const double pivotH, const double breakBuf)
+{
+   if(pivotH <= 0.0 || breakBuf <= 0.0) return false;
+   // use strictly closed bar
+   double c1 = iClose(_Symbol, PERIOD_M15, 1);
+   if(!MathIsValidNumber(c1) || c1<=0.0) return false;
+   if(S_M15.state == BreakUp) return false;
+   // If NewsMode modifies buffers elsewhere, they already arrive multiplied into breakBuf
+   if(c1 > (pivotH + breakBuf))
+   {
+      S_M15.lastBreakTime   = iTime(_Symbol, PERIOD_M15, 1);
+      S_M15.lastBreakLevel  = pivotH;
+      S_M15.state           = BreakUp;
+      S_M15.retestOkPrinted = false;
+      S_M15.labelBarIndex   = -1;
+      if(DebugReplay) Print("[RT] BREAK_UP at ", DoubleToString(c1,_Digits), " level=", DoubleToString(pivotH,_Digits), " buf=", DoubleToString(breakBuf,_Digits));
+      return true;
+   }
+   return false;
+}
+
+bool DetectBreakDn_M15(const double pivotL, const double breakBuf)
+{
+   if(pivotL <= 0.0 || breakBuf <= 0.0) return false;
+   double c1 = iClose(_Symbol, PERIOD_M15, 1);
+   if(!MathIsValidNumber(c1) || c1<=0.0) return false;
+   if(S_M15.state == BreakDn) return false;
+   // NewsMode effect comes through breakBuf argument
+   if(c1 < (pivotL - breakBuf))
+   {
+      S_M15.lastBreakTime   = iTime(_Symbol, PERIOD_M15, 1);
+      S_M15.lastBreakLevel  = pivotL;
+      S_M15.state           = BreakDn;
+      S_M15.retestOkPrinted = false;
+      S_M15.labelBarIndex   = -1;
+      if(DebugReplay) Print("[RT] BREAK_DN at ", DoubleToString(c1,_Digits), " level=", DoubleToString(pivotL,_Digits), " buf=", DoubleToString(breakBuf,_Digits));
+      return true;
+   }
+   return false;
+}
+
+// --- Visualize pivot status line and update panel text
+void PaintPivotStatus(const bool ok, const bool fail, const double level)
+{
+   if(level <= 0.0) return;
+   string name = "[RT_PIVOT_M15]";
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_HLINE, 0, 0, level);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, level);
+
+   color c = clrSilver; int w = 2; ENUM_LINE_STYLE st = STYLE_DOT;
+   if(ok){ c = clrLime; st = STYLE_SOLID; }
+   else if(fail){ c = clrRed; st = STYLE_SOLID; }
+   else { c = clrSilver; st = STYLE_DOT; }
+   ObjectSetInteger(0, name, OBJPROP_COLOR, c);
+   ObjectSetInteger(0, name, OBJPROP_WIDTH, w);
+   ObjectSetInteger(0, name, OBJPROP_STYLE, st);
+   ObjectSetInteger(0, name, OBJPROP_BACK, true);
+}
+
+// --- Evaluate retest after a recorded break on M15 (closed bars only)
+void EvaluateRetest_M15(const double pivotH, const double pivotL,
+                        const double breakBuf, const double retestTol)
+{
+   // Only act when a break was recorded
+   if(S_M15.state == NoBreak || S_M15.lastBreakTime == 0) return;
+
+   // Determine base parameters per direction
+   bool isUp = (S_M15.state == BreakUp);
+   double pivot = (isUp ? pivotH : pivotL);
+   if(pivot <= 0.0) return;
+
+   // Bar index of the break bar (at current time axis)
+   int shBreak = iBarShift(_Symbol, PERIOD_M15, S_M15.lastBreakTime, false);
+   if(shBreak < 1) return; // safety
+
+   // Precompute noise half-buffer in points from pips
+   double halfNoisePts = Points(AutoNoisePips() * 0.5);
+
+   // TTL: if label exists and age exceeded, do not re-render labels (keep status only)
+   if(S_M15.labelBarIndex >= 1)
+   {
+      int age = shBreak - S_M15.labelBarIndex;
+      if(age > Label_TTL_Bars)
+      {
+         // Do not repaint label beyond TTL; keep retestOkPrinted flag until explicit FAIL/new Break
+         return;
+      }
+   }
+
+   // Scan first Retest_MaxBars closed bars AFTER the break bar: indices (shBreak-1) .. (shBreak-Retest_MaxBars)
+   int maxBars = MathMax(1, Retest_MaxBars);
+   for(int k=1; k<=maxBars; ++k)
+   {
+      int idx = shBreak - k;
+      if(idx < 1) break;
+
+      double o = iOpen (_Symbol, PERIOD_M15, idx);
+      double h = iHigh (_Symbol, PERIOD_M15, idx);
+      double l = iLow  (_Symbol, PERIOD_M15, idx);
+      double c = iClose(_Symbol, PERIOD_M15, idx);
+      datetime t = iTime(_Symbol, PERIOD_M15, idx);
+      if(!(MathIsValidNumber(h) && MathIsValidNumber(l) && MathIsValidNumber(c))) continue;
+
+      // OK condition
+      bool ok=false;
+      if(isUp)
+      {
+         bool touched = (l <= (pivot + retestTol));
+         bool closed  = (c >= (pivot + halfNoisePts));
+         ok = (touched && closed);
+      }
+      else
+      {
+         bool touched = (h >= (pivot - retestTol));
+         bool closed  = (c <= (pivot - halfNoisePts));
+         ok = (touched && closed);
+      }
+
+      if(ok && !S_M15.retestOkPrinted && S_M15_OkForBreak != S_M15.lastBreakTime)
+      {
+         // Mark OK once
+         color col = (isUp ? clrLime : clrLime);
+         string nm = StringFormat("[RT_OK_M15_%I64d]", (long)t);
+         if(ObjectFind(0, nm) < 0)
+         {
+            ObjectCreate(0, nm, OBJ_TEXT, 0, t, pivot);
+            ObjectSetInteger(0, nm, OBJPROP_COLOR, col);
+            ObjectSetInteger(0, nm, OBJPROP_FONTSIZE, 8);
+            ObjectSetInteger(0, nm, OBJPROP_BACK, true);
+            ObjectSetString(0, nm, OBJPROP_TEXT, "RETEST OK");
+         }
+         S_M15.retestOkPrinted = true;
+         S_M15.labelBarIndex = idx;
+         S_M15_LastStatus = +1;
+         // Update pivot visualization
+         PaintPivotStatus(true, false, pivot);
+         // One-shot alert/log
+         double bb=breakBuf, rt=retestTol; double px=c;
+         string msg = StringFormat("RETEST OK M15 at %s price=%s | buf=%.1f pips tol=%.1f pips",
+                                   TimeToString(t, TIME_DATE|TIME_MINUTES), DoubleToString(px,_Digits), ToPips(bb), ToPips(rt));
+         Print("[RT] ", msg);
+         Alert(msg);
+         if(DebugReplay) Print("[RT] RETEST_OK sequence: ", (S_M15.state==BreakUp?"BREAK_UP":"BREAK_DN"), " -> OK");
+         S_M15_OkForBreak = S_M15.lastBreakTime;
+         return; // do not continue scanning once OK is set
+      }
+
+      // FAIL condition (prior to OK)
+      if(!S_M15.retestOkPrinted)
+      {
+         bool fail=false;
+         if(isUp)
+            fail = (c <= (pivot - breakBuf));
+         else
+            fail = (c >= (pivot + breakBuf));
+         if(fail)
+         {
+            string nf = StringFormat("[RT_FAIL_M15_%I64d]", (long)t);
+            if(ObjectFind(0, nf) < 0)
+            {
+               ObjectCreate(0, nf, OBJ_TEXT, 0, t, pivot);
+               ObjectSetInteger(0, nf, OBJPROP_COLOR, clrRed);
+               ObjectSetInteger(0, nf, OBJPROP_FONTSIZE, 8);
+               ObjectSetInteger(0, nf, OBJPROP_BACK, true);
+               ObjectSetString(0, nf, OBJPROP_TEXT, "RETEST FAIL");
+            }
+            // Reset state
+            S_M15.retestOkPrinted = false;
+            S_M15.state = NoBreak;
+            S_M15.labelBarIndex = -1;
+            S_M15_LastStatus = -1;
+            PaintPivotStatus(false, true, pivot);
+            // One-shot alert/log
+            double bb2=breakBuf, rt2=retestTol; double px2=c;
+            string msg2 = StringFormat("RETEST FAIL M15 at %s price=%s | buf=%.1f pips tol=%.1f pips",
+                                      TimeToString(t, TIME_DATE|TIME_MINUTES), DoubleToString(px2,_Digits), ToPips(bb2), ToPips(rt2));
+            Print("[RT] ", msg2);
+            Alert(msg2);
+            if(DebugReplay) Print("[RT] RETEST_FAIL sequence: ", (isUp?"BREAK_UP":"BREAK_DN"), " -> FAIL");
+            return;
+         }
+      }
+   }
+   // If reached here without OK/FAIL change, update line as WAIT
+   if(S_M15_LastStatus == 0) PaintPivotStatus(false, false, pivot);
 }
