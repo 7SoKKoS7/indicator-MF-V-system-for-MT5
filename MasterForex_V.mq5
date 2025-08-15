@@ -161,6 +161,12 @@ input PipMode PipSizeMode     = Pip_AutoFX;
 input double  PipCustomSize   = 0.00010;   // если Pip_Custom, размер pip в цене
 input string  NonFxUnits      = "USD";     // подпись единиц для не‑FX
 
+// --- Header/Panel identifiers and layout (top-left)
+#define MFV_HEADER "MFV_Header"
+#define MFV_PANEL  "MFV_Panel"
+input int PanelTopOffset = 6;   // верхний отступ заголовка панели
+input int PanelLineGap   = 4;   // вертикальный зазор между строками
+
 // Якорение стрелок к базовому ТФ, чтобы сигналы были одинаковыми на всех графиках
 enum AnchorMode { Anchor_Current, Anchor_M5 };
 input AnchorMode SignalAnchor = Anchor_M5;    // На каком ТФ фиксировать время сигнала при отрисовке
@@ -2043,6 +2049,10 @@ int OnInit()
    if(GetATR(PERIOD_H1,  ATR_Period_H1)  < 0.0) { }
    if(IsBreakoutConfirmed(0.0, +1, PERIOD_H1, Breakout_ATR_Mult, Breakout_MinCloseBars, Noise_Mult_M15, Noise_Mult_H1)) { }
 
+   // Очистка любых комментариев тестера/графика и устаревших лейблов
+   Comment("");
+   CleanupLegacyLabels();
+
    return(INIT_SUCCEEDED);
 }
 
@@ -2102,6 +2112,9 @@ void OnDeinit(const int reason)
    // Дополнительные строки статуса
    ObjectDelete(0, "MFV_STATUS_PHASE");
    ObjectDelete(0, "MFV_STATUS_CONS");
+   // Новый заголовок и панель
+   ObjectDelete(0, MFV_HEADER);
+   ObjectDelete(0, MFV_PANEL);
 
    // Освобождение ресурсов индикаторов (во избежание утечек хэндлов)
    if(atrH1Handle != INVALID_HANDLE) { IndicatorRelease(atrH1Handle); atrH1Handle = INVALID_HANDLE; }
@@ -2216,7 +2229,7 @@ void DrawWarmupStatus(const bool okH1, const int haveH1, const int needH1,
    if(ObjectFind(0, nm) < 0)
    {
       ObjectCreate(0, nm, OBJ_LABEL, 0, 0, 0);
-      ObjectSetInteger(0, nm, OBJPROP_CORNER, 0);
+      ObjectSetInteger(0, nm, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
       ObjectSetInteger(0, nm, OBJPROP_XDISTANCE, 10);
       ObjectSetInteger(0, nm, OBJPROP_YDISTANCE, 8);
       ObjectSetInteger(0, nm, OBJPROP_FONTSIZE, 12);
@@ -2224,6 +2237,69 @@ void DrawWarmupStatus(const bool okH1, const int haveH1, const int needH1,
       ObjectSetInteger(0, nm, OBJPROP_COLOR, clrSilver);
    }
    ObjectSetString(0, nm, OBJPROP_TEXT, txt);
+}
+
+// Универсальный безопасный апсерт лейбла
+void UpsertLabel(const string name,
+                 const int corner,const int x,const int y,
+                 const string text,const int fontsize,const color col,
+                 const bool back=false)
+{
+  if(ObjectFind(0,name)<0) ObjectCreate(0,name,OBJ_LABEL,0,0,0);
+  ObjectSetInteger(0,name,OBJPROP_CORNER,corner);
+  ObjectSetInteger(0,name,OBJPROP_XDISTANCE,x);
+  ObjectSetInteger(0,name,OBJPROP_YDISTANCE,y);
+  ObjectSetInteger(0,name,OBJPROP_FONTSIZE,fontsize);
+  ObjectSetInteger(0,name,OBJPROP_COLOR,col);
+  ObjectSetInteger(0,name,OBJPROP_BACK,back);
+  ObjectSetString (0,name,OBJPROP_TEXT,text);
+}
+
+// Сдвиг вниз всех левоверхних лейблов ниже заголовка
+void FixTopOverlap()
+{
+  if(ObjectFind(0,MFV_HEADER)<0) return;
+  const int headY = (int)ObjectGetInteger(0,MFV_HEADER,OBJPROP_YDISTANCE);
+  const int fnt   = (int)ObjectGetInteger(0,MFV_HEADER,OBJPROP_FONTSIZE);
+  const int headBottom = headY + (int)MathRound(fnt*1.4) + PanelLineGap;
+
+  const int total = ObjectsTotal(0,0,-1);
+  for(int i=total-1;i>=0;i--)
+  {
+    string name = ObjectName(0,i);
+    if(name==MFV_HEADER) continue;
+    if(ObjectGetInteger(0,name,OBJPROP_TYPE)!=OBJ_LABEL) continue;
+    if((int)ObjectGetInteger(0,name,OBJPROP_CORNER)!=CORNER_LEFT_UPPER) continue;
+
+    int y = (int)ObjectGetInteger(0,name,OBJPROP_YDISTANCE);
+    if(y < headBottom) ObjectSetInteger(0,name,OBJPROP_YDISTANCE,headBottom);
+  }
+}
+
+// Удаление, если существует
+void DeleteIfExists(const string name){ if(ObjectFind(0,name)>=0) ObjectDelete(0,name); }
+
+// Очистить старые/неиспользуемые лейблы
+void CleanupLegacyLabels()
+{
+  string legacy[] = {"Trend","TrendLabel","TrendStatus","Header","HeaderLabel",
+                     "Status","Info","InfoPanel","OM45","TextLabel1","TextLabel2",
+                     "MFV_STATUS_TREND","MFV_STATUS_M5","MFV_STATUS_M15","MFV_STATUS_H1",
+                     "MFV_STATUS_H4","MFV_STATUS_D1","MFV_STATUS_STRENGTH","MFV_STATUS_VOLUME",
+                     "MFV_STATUS_SESSION","MFV_STATUS_SIGNAL","MFV_STATUS_CLINCH","MFV_STATUS_NOISE",
+                     "MFV_STATUS_RETEST","MFV_STATUS_PHASE","MFV_STATUS_CONS","MFV_STATUS_EXITNOTE"};
+  for(int i=0;i<ArraySize(legacy);i++) if(ObjectFind(0,legacy[i])>=0) ObjectDelete(0,legacy[i]);
+}
+
+// Единый рендер заголовка и панели текста
+void DrawPanel(const string headerText,const string bodyText)
+{
+  UpsertLabel(MFV_HEADER, CORNER_LEFT_UPPER, 6, PanelTopOffset, headerText, 10, clrWhite, false);
+
+  const int bodyY = PanelTopOffset + (int)MathRound(10*1.4) + PanelLineGap;
+  UpsertLabel(MFV_PANEL,  CORNER_LEFT_UPPER, 6, bodyY, bodyText,   10, clrWhite, false);
+
+  FixTopOverlap();
 }
 
 // Прогрев хэндла ZigZag: мягко инициирует вычисление буферов, чтобы уйти от BarsCalculated=-1 в логах
@@ -2669,16 +2745,7 @@ int OnCalculate(const int rates_total,
       StringFormat("Сессия: %s", analysis.sessionValid ? "✓" : "✗") :
       StringFormat("Session: %s", analysis.sessionValid ? "✓" : "✗");
 
-   // Отрисовка статуса
-   DrawRowLabel("MFV_STATUS_TREND", trendStatus, 10);
-   DrawRowLabel("MFV_STATUS_M5",    levelM5,     30);
-   DrawRowLabel("MFV_STATUS_M15",   levelM15,    50);
-   DrawRowLabel("MFV_STATUS_H1",    levelH1,     70);
-   if(UseTF_H4) DrawRowLabel("MFV_STATUS_H4",    levelH4,     90);  else ObjectDelete(0, "MFV_STATUS_H4");
-   if(UseTF_D1) DrawRowLabel("MFV_STATUS_D1",    levelD1,     110); else ObjectDelete(0, "MFV_STATUS_D1");
-   DrawRowLabel("MFV_STATUS_STRENGTH", strengthText, 130);
-   DrawRowLabel("MFV_STATUS_VOLUME", volumeText, 150);
-   DrawRowLabel("MFV_STATUS_SESSION", sessionText, 170);
+   // Панель рисуется в конце расчёта единым блоком (заголовок+тело)
 
    // Смена тренда на M5 как триггер входа (по MF-V). Исключаем первый запуск (lastTrendM5==0)
    bool m5TrendChanged = (lastTrendM5 != 0 && trendM5 != 0 && trendM5 != lastTrendM5);
@@ -2691,6 +2758,8 @@ int OnCalculate(const int rates_total,
 
    // Детектор фазы рынка (флет): даунгрейд классов до Early
    bool isFlat = IsFlatPhase_M15();
+   // Кэш строки ретеста для панели
+   string retxtCached = "";
 
    // Расчет CLINCH по коридору [PivotLow_H1..PivotHigh_H1] (не чаще 1 H1-бара)
    static ClinchStatus clinchState;
@@ -3103,13 +3172,7 @@ int OnCalculate(const int rates_total,
    {
       // Ничего: статус выхода уже установлен. Метка ниже добавляется отдельной строкой
    }
-   DrawRowLabel("MFV_STATUS_SIGNAL", signalText, 190);
-   // Специальная строка-пояснение к независимому выходу по M5 pivot
-   if(firedHardExit)
-   {
-      string exitNote = (UseRussian? "Exit by M5 pivot: ✓" : "Exit by M5 pivot: ✓");
-      DrawRowLabel("MFV_STATUS_EXITNOTE", exitNote, 200);
-   }
+   // Сигнальные строки будут включены в общий bodyText ниже
 
    // Статус CLINCH (режим зоны)
    double rangeAtr = (clinchState.atr > 0.0 ? (clinchState.range / clinchState.atr) : 0.0);
@@ -3135,7 +3198,7 @@ int OnCalculate(const int rates_total,
    string clinchText = UseRussian ?
        StringFormat("Схватка: %s, %sflips=%d, range=%s, %s", clinchOn, intervalText, clinchState.flips, rangeStr, bandText) :
        StringFormat("Clinch: %s, %sflips=%d, range=%s, %s", clinchOn, intervalText, clinchState.flips, rangeStr, bandText);
-   DrawRowLabel("MFV_STATUS_CLINCH", clinchText, 210);
+   // Clinch строка будет включена в общий bodyText ниже
 
    // Ретест отладка (косметика): выводим последнюю известную проверку ретеста
    if(dbgRetLastHas)
@@ -3145,29 +3208,28 @@ int OnCalculate(const int rates_total,
       if(!UseRetestVolume) retVol = (UseRussian?"vol –":"vol –");
       else                 retVol = (dbgRetM15Vol ? (UseRussian?"vol ✓":"vol ✓") : (UseRussian?"vol ✗":"vol ✗"));
       string retM5  = (dbgRetM5Ok ? (UseRussian?"M5 ✓":"M5 ✓") : (UseRussian?"M5 ✗":"M5 ✗"));
-      string retxt = UseRussian ?
+      retxtCached = (UseRussian ?
          StringFormat("Ретест: %s (%s), %s", retM15, retVol, retM5) :
-         StringFormat("Retest: %s (%s), %s", retM15, retVol, retM5);
-      DrawRowLabel("MFV_STATUS_RETEST", retxt, 270);
+         StringFormat("Retest: %s (%s), %s", retM15, retVol, retM5));
    }
 
    // Фаза рынка (Flat/Trend) — строкой под Clinch
    string phaseText = UseRussian ?
       StringFormat("Фаза: %s", isFlat ? "Флет" : "Тренд") :
       StringFormat("Phase: %s", isFlat ? "Flat" : "Trend");
-   DrawRowLabel("MFV_STATUS_PHASE", phaseText, 230);
+   // Фаза будет включена в общий bodyText ниже
 
    // Панель консенсуса, если включено
+   // Соберём строки Consensus/Noise для единой панели
+   string consPanelText = "";
+   string noisePanelText = "";
    if(Consensus != Cons_Off)
    {
       int emaD=0; bool rOK=true; double rV=50.0; bool kons=true;
       int dirPanel = 0;
       if(ReadFilters(1, emaD, rOK, rV))
       {
-         // Направление ядра по H1
          dirPanel = (trendH1>0?+1:(trendH1<0?-1:0));
-
-         // Голоса
          int coreVote = (dirPanel!=0 ? 1 : 0);
          int emaVote  = ((dirPanel!=0 && emaD==dirPanel) ? 1 : 0);
          bool rsiBuyOK  = (rV <= (RsiOB - RsiHyst));
@@ -3178,9 +3240,6 @@ int OnCalculate(const int rates_total,
          else rsiVote = 0;
          int votes = coreVote + emaVote + rsiVote;
          string checkMark = (votes>=2 ? "✓" : "✗");
-
-         // Артефакты отображения
-         string side = (dirPanel>0?"BUY":(dirPanel<0?"SELL":"–"));
          string arrowH1 = (dirPanel>0?"↑":(dirPanel<0?"↓":"–"));
          string coreMark = (dirPanel!=0?"✓":"–");
          string emaArrow = (emaD>0?"↑":(emaD<0?"↓":"–"));
@@ -3189,14 +3248,44 @@ int OnCalculate(const int rates_total,
          string rsiMark = "–";
          if(dirPanel>0) rsiMark = (rsiBuyOK?"✓":"✗");
          else if(dirPanel<0) rsiMark = (rsiSellOK?"✓":"✗");
-
-         string consText = StringFormat("Consensus: %d/3 %s | [H1: %s %s | EMA(M15): %s %s | RSI(M15): %s]",
-                                        votes, checkMark, arrowH1, coreMark, emaArrow, emaMark, rsiMark);
-         DrawRowLabel("MFV_STATUS_CONS", consText, 250);
-         // noise row immediately under consensus
-         DrawNoiseRow(270);
+         consPanelText = StringFormat("Consensus: %d/3 %s | [H1: %s %s | EMA(M15): %s %s | RSI(M15): %s]",
+                                      votes, checkMark, arrowH1, coreMark, emaArrow, emaMark, rsiMark);
       }
    }
+   {
+      double a15=0.0, aH1=0.0, nz=0.0; int nd=0; double nRound=0.0; double pips=0.0;
+      if(!GetATRsAndNoise(a15, aH1, nz)) noisePanelText = "NOISE: NO DATA";
+      else
+      {
+         nd = MathMin(NoiseDecimals, SymDigits());
+         nRound = NormalizeDouble(nz, nd);
+         pips = ToPips(nRound);
+         bool fx = IsForex();
+         bool pipOff = (PipSizeMode==Pip_Off) || (!fx && PipSizeMode==Pip_AutoFX);
+         if(pipOff) noisePanelText = StringFormat("NOISE: %.*f %s", nd, nRound, NonFxUnits);
+         else       noisePanelText = StringFormat("NOISE: %.*f (%.1f pips)", nd, nRound, pips);
+      }
+   }
+
+   // Единый рендер заголовка/панели
+   string headerText = (UseRussian? "MasterForex-V MultiTF v9.0" : "MasterForex-V MultiTF v9.0");
+   string bodyText = trendStatus + "\n" + levelM5 + "\n" + levelM15 + "\n" + levelH1;
+   if(UseTF_H4 && levelH4!="") bodyText += ("\n" + levelH4);
+   if(UseTF_D1 && levelD1!="") bodyText += ("\n" + levelD1);
+   bodyText += ("\n" + strengthText);
+   bodyText += ("\n" + volumeText);
+   bodyText += ("\n" + sessionText);
+   bodyText += ("\n" + signalText);
+   if(firedHardExit) { string exitNote = (UseRussian? "Exit by M5 pivot: ✓" : "Exit by M5 pivot: ✓"); bodyText += ("\n" + exitNote); }
+   bodyText += ("\n" + clinchText);
+   if(dbgRetLastHas && retxtCached!="")
+   {
+      bodyText += ("\n" + retxtCached);
+   }
+   bodyText += ("\n" + phaseText);
+   if(consPanelText!="") bodyText += ("\n" + consPanelText);
+   if(noisePanelText!="") bodyText += ("\n" + noisePanelText);
+   if(ShowStatusInfo) DrawPanel(headerText, bodyText);
 
    // Комментарий по пивотам удалён, чтобы не накладываться на панель статуса
 
@@ -3272,7 +3361,7 @@ int OnCalculate(const int rates_total,
        PruneAllSignalsToLastN(rates_total, 1);
    }
 
-   // Noise now rendered as a panel row under consensus (DrawNoiseRow)
+   // Noise/consensus теперь в составе общего bodyText
    ChartRedraw();
 
    return(rates_total);
