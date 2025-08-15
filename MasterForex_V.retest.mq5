@@ -1246,6 +1246,26 @@ int GetLastSwingDirZZ(const ENUM_TIMEFRAMES tf)
    return 0;
 }
 
+// Unified trend direction for any TF using dual-pivot, last swing and ATR tolerance (no repaint)
+enum TrendDir { Trend_Up, Trend_Down, Trend_Flat };
+TrendDir DetermineTrendTF(const ENUM_TIMEFRAMES TF,
+                          const double pivotLow,
+                          const double pivotHigh,
+                          const bool lastSwingUp,
+                          const bool lastSwingDown,
+                          const double closeTF,
+                          const double tol)
+{
+   if(pivotLow>0.0 && closeTF > (pivotLow + tol) && lastSwingUp)   return Trend_Up;
+   if(pivotHigh>0.0 && closeTF < (pivotHigh - tol) && lastSwingDown) return Trend_Down;
+
+   // Fallback to avoid prolonged flat if swing has not updated yet
+   if(pivotLow>0.0 && closeTF > (pivotLow + 2.0*tol) && !lastSwingDown)  return Trend_Up;
+   if(pivotHigh>0.0 && closeTF < (pivotHigh - 2.0*tol) && !lastSwingUp)  return Trend_Down;
+
+   return Trend_Flat;
+}
+
 // Сколько баров запрашивать для поиска последних подтверждённых H/L
 int GetScanBarsForTF(const ENUM_TIMEFRAMES tf)
 {
@@ -2805,22 +2825,24 @@ int OnCalculate(const int rates_total,
    double cM15 = iClose(_Symbol, PERIOD_M15, shM15_anchor);
    double cM5  = iClose(_Symbol, PERIOD_M5,  1);
    int trendH1  = DetermineTrend(pivH1,  cH1);
-   // M15 trend strictly by close beyond pivot with break buffer (no wicks, closed bars only)
-   double bbM15_calc=0.0, tolM15_calc=0.0; ComputeBuffers(PERIOD_M15, bbM15_calc, tolM15_calc);
-   int trendM15 = 0;
-   {
-      double tolAtr = AtrTolH1();
-      if(pivM15.high>0.0 && cM15 > (pivM15.high + bbM15_calc + tolAtr))      trendM15 = +1;
-      else if(pivM15.low>0.0 && cM15 < (pivM15.low  - bbM15_calc - tolAtr))  trendM15 = -1;
-   }
-   // M5 trend strictly by close beyond pivot with break buffer
-   double bbM5_calc=0.0, tolM5_calc=0.0; ComputeBuffers(PERIOD_M5, bbM5_calc, tolM5_calc);
-   int trendM5  = 0;
-   {
-      double tolAtr5 = AtrTolH1();
-      if(pivM5.high>0.0 && cM5 > (pivM5.high + bbM5_calc + tolAtr5))      trendM5 = +1;
-      else if(pivM5.low>0.0 && cM5 < (pivM5.low  - bbM5_calc - tolAtr5))  trendM5 = -1;
-   }
+
+   // Trend for M15/M5 via unified function and ATR tolerance
+   double tol = AtrTolH1();
+   // Compute last swing direction via ZZ, then convert to booleans
+   int sw15 = GetLastSwingDirZZ(PERIOD_M15);
+   bool swingUp15 = (sw15 > 0), swingDn15 = (sw15 < 0);
+   int sw5  = GetLastSwingDirZZ(PERIOD_M5);
+   bool swingUp5  = (sw5 > 0),  swingDn5  = (sw5 < 0);
+
+   // Compute buffers
+   double bbM15=0.0, rtM15=0.0; ComputeBuffers(PERIOD_M15, bbM15, rtM15);
+   double bbM5 =0.0, rtM5 =0.0; ComputeBuffers(PERIOD_M5,  bbM5,  rtM5);
+
+   // Use DetermineTrendTF
+   TrendDir td15 = DetermineTrendTF(PERIOD_M15, pivM15.low, pivM15.high, swingUp15, swingDn15, cM15, (tol + bbM15));
+   TrendDir td5  = DetermineTrendTF(PERIOD_M5,  pivM5.low,  pivM5.high,  swingUp5,  swingDn5,  cM5,  (tol + bbM5));
+   int trendM15 = (td15==Trend_Up ? +1 : (td15==Trend_Down ? -1 : 0));
+   int trendM5  = (td5 ==Trend_Up ? +1 : (td5 ==Trend_Down ? -1 : 0));
    int trendH4  = 0, trendD1=0;
    if(UseTF_H4){ int shH4=ClosedShiftAtTime(PERIOD_H4, tAnchorM5); if(shH4>=1){ double cH4 = iClose(_Symbol, PERIOD_H4, shH4); trendH4 = DetermineTrend(pivH4, cH4); }}
    if(UseTF_D1){ int shD1=ClosedShiftAtTime(PERIOD_D1, tAnchorM5); if(shD1>=1){ double cD1 = iClose(_Symbol, PERIOD_D1, shD1); trendD1 = DetermineTrend(pivD1, cD1); }}
