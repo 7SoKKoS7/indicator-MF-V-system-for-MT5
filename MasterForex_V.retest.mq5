@@ -2742,7 +2742,11 @@ int OnCalculate(const int rates_total,
    double cM15 = iClose(_Symbol, PERIOD_M15, shM15_anchor);
    double cM5  = iClose(_Symbol, PERIOD_M5,  1);
    int trendH1  = DetermineTrend(pivH1,  cH1);
-   int trendM15 = DetermineTrend(pivM15, cM15);
+   // M15 trend strictly by close beyond pivot with break buffer (no wicks, closed bars only)
+   double bbM15_calc=0.0, tolM15_calc=0.0; ComputeBuffers(PERIOD_M15, bbM15_calc, tolM15_calc);
+   int trendM15 = 0;
+   if(pivM15.high>0.0 && cM15 > (pivM15.high + bbM15_calc))      trendM15 = +1;
+   else if(pivM15.low>0.0 && cM15 < (pivM15.low  - bbM15_calc))  trendM15 = -1;
    int trendM5  = DetermineTrend(pivM5,  cM5);
    int trendH4  = 0, trendD1=0;
    if(UseTF_H4){ int shH4=ClosedShiftAtTime(PERIOD_H4, tAnchorM5); if(shH4>=1){ double cH4 = iClose(_Symbol, PERIOD_H4, shH4); trendH4 = DetermineTrend(pivH4, cH4); }}
