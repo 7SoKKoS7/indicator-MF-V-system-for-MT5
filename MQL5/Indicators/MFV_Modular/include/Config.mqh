@@ -1,7 +1,8 @@
 #ifndef __MFV_CONFIG_MQH__
 #define __MFV_CONFIG_MQH__
 
-struct MFVConfig {
+class MFVConfig {
+public:
    bool   UseRussian;
    bool   EnableVolumeFilter;
    bool   EnableSessionFilter;

@@ -5,7 +5,7 @@ class TrendEngine {
    PivotEngine *pe; MFVConfig *cfg;
    TFTrend h1, m15, m5;
 public:
-   void Init(PivotEngine* p, MFVConfig* c){ pe=p; cfg=c; }
+   void Init(PivotEngine &p, MFVConfig &c){ pe=GetPointer(p); cfg=GetPointer(c); }
    void UpdateAllTF(){ h1.dir=TD_Flat; m15.dir=TD_Flat; m5.dir=TD_Flat; }
    TFTrend Get(ENUM_TIMEFRAMES tf) const {
       if(tf==PERIOD_H1) return h1;
