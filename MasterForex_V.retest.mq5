@@ -286,6 +286,7 @@ struct MfvRetestState
 };
 static MfvRetestState S_M15;
 static int S_M15_LastStatus = 0; // -1 FAIL, 0 WAIT, +1 OK
+static datetime S_M15_OkForBreak = 0; // lastBreakTime for which OK was already printed
 
 // --- Dual-pivot per timeframe (High/Low) non-repainting cache
 struct TFPivots
@@ -2106,6 +2107,7 @@ int OnInit()
    S_M15.labelBarIndex   = -1;
    S_M15.retestOkPrinted = false;
    S_M15_LastStatus      = 0;
+   S_M15_OkForBreak      = 0;
 
    return(INIT_SUCCEEDED);
 }
@@ -3381,6 +3383,12 @@ int OnCalculate(const int rates_total,
 
    // Единый рендер заголовка/панели
    string headerText = (UseRussian? "MasterForex-V MultiTF v9.0" : "MasterForex-V MultiTF v9.0");
+   if(NewsMode)
+   {
+      double nm = NewsMode_Mul;
+      string tag = StringFormat(" NEWS x%.1f", nm);
+      headerText += tag;
+   }
    string bodyText = trendStatus + "\n" + levelM5 + "\n" + levelM15 + "\n" + levelH1;
    if(UseTF_H4 && levelH4!="") bodyText += ("\n" + levelH4);
    if(UseTF_D1 && levelD1!="") bodyText += ("\n" + levelD1);
@@ -3613,6 +3621,7 @@ bool DetectBreakUp_M15(const double pivotH, const double breakBuf)
    double c1 = iClose(_Symbol, PERIOD_M15, 1);
    if(!MathIsValidNumber(c1) || c1<=0.0) return false;
    if(S_M15.state == BreakUp) return false;
+   // If NewsMode modifies buffers elsewhere, they already arrive multiplied into breakBuf
    if(c1 > (pivotH + breakBuf))
    {
       S_M15.lastBreakTime   = iTime(_Symbol, PERIOD_M15, 1);
@@ -3632,6 +3641,7 @@ bool DetectBreakDn_M15(const double pivotL, const double breakBuf)
    double c1 = iClose(_Symbol, PERIOD_M15, 1);
    if(!MathIsValidNumber(c1) || c1<=0.0) return false;
    if(S_M15.state == BreakDn) return false;
+   // NewsMode effect comes through breakBuf argument
    if(c1 < (pivotL - breakBuf))
    {
       S_M15.lastBreakTime   = iTime(_Symbol, PERIOD_M15, 1);
@@ -3723,7 +3733,7 @@ void EvaluateRetest_M15(const double pivotH, const double pivotL,
          ok = (touched && closed);
       }
 
-      if(ok && !S_M15.retestOkPrinted)
+      if(ok && !S_M15.retestOkPrinted && S_M15_OkForBreak != S_M15.lastBreakTime)
       {
          // Mark OK once
          color col = (isUp ? clrLime : clrLime);
@@ -3748,6 +3758,7 @@ void EvaluateRetest_M15(const double pivotH, const double pivotL,
          Print("[RT] ", msg);
          Alert(msg);
          if(DebugReplay) Print("[RT] RETEST_OK sequence: ", (S_M15.state==BreakUp?"BREAK_UP":"BREAK_DN"), " -> OK");
+         S_M15_OkForBreak = S_M15.lastBreakTime;
          return; // do not continue scanning once OK is set
       }
 
