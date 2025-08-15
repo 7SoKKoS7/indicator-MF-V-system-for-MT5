@@ -561,6 +561,15 @@ double GetATR(ENUM_TIMEFRAMES tf, int period)
    return 0.0;
 }
 
+// Унифицированный толеранс по ATR(H1) для сравнений с pivot
+double AtrTolH1()
+{
+   double atr = GetATR(PERIOD_H1, 14);
+   if(atr <= 0.0) atr = GetATR_H1();
+   double tol = MathMax(2*_Point, (TrendTolAtrK>0.0 ? TrendTolAtrK * atr : 0.0));
+   return tol;
+}
+
 // Простое вычисление ATR (средний True Range) по закрытым барам как надёжный фоллбэк
 double ComputeATRManual(const ENUM_TIMEFRAMES tf, const int period)
 {
@@ -2799,13 +2808,19 @@ int OnCalculate(const int rates_total,
    // M15 trend strictly by close beyond pivot with break buffer (no wicks, closed bars only)
    double bbM15_calc=0.0, tolM15_calc=0.0; ComputeBuffers(PERIOD_M15, bbM15_calc, tolM15_calc);
    int trendM15 = 0;
-   if(pivM15.high>0.0 && cM15 > (pivM15.high + bbM15_calc))      trendM15 = +1;
-   else if(pivM15.low>0.0 && cM15 < (pivM15.low  - bbM15_calc))  trendM15 = -1;
+   {
+      double tolAtr = AtrTolH1();
+      if(pivM15.high>0.0 && cM15 > (pivM15.high + bbM15_calc + tolAtr))      trendM15 = +1;
+      else if(pivM15.low>0.0 && cM15 < (pivM15.low  - bbM15_calc - tolAtr))  trendM15 = -1;
+   }
    // M5 trend strictly by close beyond pivot with break buffer
    double bbM5_calc=0.0, tolM5_calc=0.0; ComputeBuffers(PERIOD_M5, bbM5_calc, tolM5_calc);
    int trendM5  = 0;
-   if(pivM5.high>0.0 && cM5 > (pivM5.high + bbM5_calc))      trendM5 = +1;
-   else if(pivM5.low>0.0 && cM5 < (pivM5.low  - bbM5_calc))  trendM5 = -1;
+   {
+      double tolAtr5 = AtrTolH1();
+      if(pivM5.high>0.0 && cM5 > (pivM5.high + bbM5_calc + tolAtr5))      trendM5 = +1;
+      else if(pivM5.low>0.0 && cM5 < (pivM5.low  - bbM5_calc - tolAtr5))  trendM5 = -1;
+   }
    int trendH4  = 0, trendD1=0;
    if(UseTF_H4){ int shH4=ClosedShiftAtTime(PERIOD_H4, tAnchorM5); if(shH4>=1){ double cH4 = iClose(_Symbol, PERIOD_H4, shH4); trendH4 = DetermineTrend(pivH4, cH4); }}
    if(UseTF_D1){ int shD1=ClosedShiftAtTime(PERIOD_D1, tAnchorM5); if(shD1>=1){ double cD1 = iClose(_Symbol, PERIOD_D1, shD1); trendD1 = DetermineTrend(pivD1, cD1); }}
