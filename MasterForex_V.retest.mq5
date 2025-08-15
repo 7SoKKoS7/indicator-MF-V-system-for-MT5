@@ -295,6 +295,19 @@ struct TFPivots
 };
 
 static TFPivots pivH1, pivM15, pivM5, pivH4, pivD1;
+// Helper: get cache ref by timeframe
+TFPivots* PivotCacheByTF(const ENUM_TIMEFRAMES tf)
+{
+   switch(tf)
+   {
+      case PERIOD_H1:  return &pivH1;
+      case PERIOD_M15: return &pivM15;
+      case PERIOD_M5:  return &pivM5;
+      case PERIOD_H4:  return (UseTF_H4? &pivH4 : NULL);
+      case PERIOD_D1:  return (UseTF_D1? &pivD1 : NULL);
+      default:         return NULL;
+   }
+}
 static datetime pivotsLastUpdate = 0;
 static bool pivotsEverReady = false; // станет true, когда H1/M15/M5 получат оба уровня H/L
 
@@ -1189,6 +1202,39 @@ int GetZZHandle(const ENUM_TIMEFRAMES tf)
       case PERIOD_D1:  return zzD1;
       default:         return INVALID_HANDLE;
    }
+}
+
+// Определение последнего свинга по двум последним точкам ZigZag (без репейнта, только закрытые бары)
+// Возврат: +1 (последний отрезок вверх), -1 (вниз), 0 (нет данных)
+int GetLastSwingDirZZ(const ENUM_TIMEFRAMES tf)
+{
+   int h = GetZZHandle(tf);
+   if(h==INVALID_HANDLE) return 0;
+   if(!EnsureZigZagReady(h)) return 0;
+
+   int bars = iBars(_Symbol, tf);
+   int closed = MathMax(0, bars-1);
+   if(closed <= 3) return 0;
+
+   int scan = MathMin(closed, GetScanBarsForTF(tf));
+   double m[]; ArraySetAsSeries(m, true);
+   int got = CopyBuffer(h, 0, 1, scan, m); // основной буфер, начиная с закрытого барa [1]
+   if(got <= 0) return 0;
+
+   int found = 0; double last = 0.0, prev = 0.0;
+   for(int i=0; i<got; ++i)
+   {
+      double v = m[i];
+      if(v!=0.0 && v!=EMPTY_VALUE && MathIsValidNumber(v))
+      {
+         if(found==0){ last = v; found = 1; }
+         else { prev = v; found = 2; break; }
+      }
+   }
+   if(found < 2) return 0;
+   if(last > prev) return +1;
+   if(last < prev) return -1;
+   return 0;
 }
 
 // Сколько баров запрашивать для поиска последних подтверждённых H/L
