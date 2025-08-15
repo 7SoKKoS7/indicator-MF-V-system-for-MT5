@@ -150,6 +150,7 @@ input int    MinBarsBetweenArrows = 6;        // Минимум баров ме�
 input group "=== Логирование ==="
 input bool   VerboseLogs = false;             // Подробные логи (инициализация/обновления пивотов)
 input bool   DebugLogs   = false;             // Отладочная цепочка решений (1 раз на бар)
+input bool   DebugReplay = false;             // Пошаговая печать последовательности событий ретеста
 
 input group "=== ATR / Noise Label ==="
 input bool   ShowNoiseLabel   = true;
@@ -3562,6 +3563,17 @@ double AutoNoisePips()
    return 0.0;
 }
 
+// --- Unit-like scenario comments for quick mental verification
+// Case A (OK):
+//   After BREAK_UP over pivotH+buf, within k<=Retest_MaxBars a bar touches (Low<=pivotH+retestTol)
+//   and closes back above (Close>=pivotH+0.5*noise). Expect: green "RETEST OK" once, state kept.
+// Case B (FAIL):
+//   After BREAK_UP, price closes back below pivotH-breakBuf before OK. Expect: red "RETEST FAIL", state reset.
+// Case C (No retest):
+//   After BREAK (any), no bar satisfies touch+close within K bars and no fail; expect WAIT line, no labels.
+// Case D (NewsMode buffers):
+//   NewsMode=true increases break/retest buffers by NewsMode_Mul, so OK detection is stricter; panel RT row shows same buf/tol in pips.
+
 // --- Compute retest/break buffers for a timeframe per settings
 void ComputeBuffers(const ENUM_TIMEFRAMES tf, double &breakBuf, double &retestTol)
 {
@@ -3608,6 +3620,7 @@ bool DetectBreakUp_M15(const double pivotH, const double breakBuf)
       S_M15.state           = BreakUp;
       S_M15.retestOkPrinted = false;
       S_M15.labelBarIndex   = -1;
+      if(DebugReplay) Print("[RT] BREAK_UP at ", DoubleToString(c1,_Digits), " level=", DoubleToString(pivotH,_Digits), " buf=", DoubleToString(breakBuf,_Digits));
       return true;
    }
    return false;
@@ -3626,6 +3639,7 @@ bool DetectBreakDn_M15(const double pivotL, const double breakBuf)
       S_M15.state           = BreakDn;
       S_M15.retestOkPrinted = false;
       S_M15.labelBarIndex   = -1;
+      if(DebugReplay) Print("[RT] BREAK_DN at ", DoubleToString(c1,_Digits), " level=", DoubleToString(pivotL,_Digits), " buf=", DoubleToString(breakBuf,_Digits));
       return true;
    }
    return false;
@@ -3727,6 +3741,13 @@ void EvaluateRetest_M15(const double pivotH, const double pivotL,
          S_M15_LastStatus = +1;
          // Update pivot visualization
          PaintPivotStatus(true, false, pivot);
+         // One-shot alert/log
+         double bb=breakBuf, rt=retestTol; double px=c;
+         string msg = StringFormat("RETEST OK M15 at %s price=%s | buf=%.1f pips tol=%.1f pips",
+                                   TimeToString(t, TIME_DATE|TIME_MINUTES), DoubleToString(px,_Digits), ToPips(bb), ToPips(rt));
+         Print("[RT] ", msg);
+         Alert(msg);
+         if(DebugReplay) Print("[RT] RETEST_OK sequence: ", (S_M15.state==BreakUp?"BREAK_UP":"BREAK_DN"), " -> OK");
          return; // do not continue scanning once OK is set
       }
 
@@ -3755,6 +3776,13 @@ void EvaluateRetest_M15(const double pivotH, const double pivotL,
             S_M15.labelBarIndex = -1;
             S_M15_LastStatus = -1;
             PaintPivotStatus(false, true, pivot);
+            // One-shot alert/log
+            double bb2=breakBuf, rt2=retestTol; double px2=c;
+            string msg2 = StringFormat("RETEST FAIL M15 at %s price=%s | buf=%.1f pips tol=%.1f pips",
+                                      TimeToString(t, TIME_DATE|TIME_MINUTES), DoubleToString(px2,_Digits), ToPips(bb2), ToPips(rt2));
+            Print("[RT] ", msg2);
+            Alert(msg2);
+            if(DebugReplay) Print("[RT] RETEST_FAIL sequence: ", (isUp?"BREAK_UP":"BREAK_DN"), " -> FAIL");
             return;
          }
       }
