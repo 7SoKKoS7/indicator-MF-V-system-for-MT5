@@ -8,19 +8,32 @@
 class ZigZagAdapter {
    MFVConfig *cfg;
    string     sym;
-   int        zzH1, zzM15, zzM5;
+   int        zzH1, zzM15, zzM5, zzH4, zzD1;
 public:
-   ZigZagAdapter():cfg(NULL),sym(""),zzH1(INVALID_HANDLE),zzM15(INVALID_HANDLE),zzM5(INVALID_HANDLE){}
+   ZigZagAdapter():cfg(NULL),sym(""),zzH1(INVALID_HANDLE),zzM15(INVALID_HANDLE),zzM5(INVALID_HANDLE),zzH4(INVALID_HANDLE),zzD1(INVALID_HANDLE){}
    void Init(const string symbol, MFVConfig* c){ sym=symbol; cfg=c; }
    void EnsureAll(){
       zzH1  = ensureZZ(PERIOD_H1,  zzH1);
       zzM15 = ensureZZ(PERIOD_M15, zzM15);
       zzM5  = ensureZZ(PERIOD_M5,  zzM5);
+      zzH4  = ensureZZ(PERIOD_H4,  zzH4);
+      zzD1  = ensureZZ(PERIOD_D1,  zzD1);
    }
    int Handle(ENUM_TIMEFRAMES tf) const {
       if(tf==PERIOD_H1)  return zzH1;
       if(tf==PERIOD_M5)  return zzM5;
+      if(tf==PERIOD_H4)  return zzH4;
+      if(tf==PERIOD_D1)  return zzD1;
       return zzM15;
+   }
+   // on-demand ensure для произвольного TF
+   int Ensure(ENUM_TIMEFRAMES tf){
+      if(tf==PERIOD_H1){ zzH1=ensureZZ(tf,zzH1); return zzH1; }
+      if(tf==PERIOD_M15){ zzM15=ensureZZ(tf,zzM15); return zzM15; }
+      if(tf==PERIOD_M5){ zzM5=ensureZZ(tf,zzM5); return zzM5; }
+      if(tf==PERIOD_H4){ zzH4=ensureZZ(tf,zzH4); return zzH4; }
+      if(tf==PERIOD_D1){ zzD1=ensureZZ(tf,zzD1); return zzD1; }
+      return INVALID_HANDLE;
    }
 private:
    int ensureZZ(ENUM_TIMEFRAMES tf, int handle)

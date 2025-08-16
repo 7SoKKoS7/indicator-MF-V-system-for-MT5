@@ -19,7 +19,7 @@ input color          PivotColorL    = clrYellow;   // цвет линии Low
 input ENUM_LINE_STYLE PivotLineStyle = STYLE_DOT;  // стиль линии (сплошная/пунктир)
 input int            PivotLineWidth = 1;           // толщина линии
 input bool  PanelUseArrows    = true;   // показывать стрелки вместо текста
-input bool  PanelShowStrength = false;  // показывать силу в скобках
+input bool  PanelShowStrength = true;   // показывать силу в скобках
 input bool  ShowPivotH4       = true;   // рисовать H4 pivots
 input bool  ShowPivotD1       = true;   // рисовать D1 pivots
 
