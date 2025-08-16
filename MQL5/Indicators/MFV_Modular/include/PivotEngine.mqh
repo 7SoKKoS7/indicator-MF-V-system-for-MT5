@@ -75,7 +75,7 @@ private:
       }
 
       // Фоллбек — простая заготовка
-      SwingPivot sp = SimpleSwing::Compute(tf);
+      SwingPivot sp(SimpleSwing::Compute(tf));
       dp.High = sp.High; dp.Low = sp.Low; dp.lastSwing = sp.lastSwing; dp.ts = sp.ts;
       return dp;
    }
