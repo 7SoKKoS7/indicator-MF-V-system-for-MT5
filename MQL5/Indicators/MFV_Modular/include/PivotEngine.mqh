@@ -2,6 +2,7 @@
 #define __MFV_PIVOTENGINE_MQH__
 
 #include "ZigZagAdapter.mqh"
+#include "SimpleSwing.mqh"
 
 class MarketData; // forward decl
 class MFVConfig;  // forward decl

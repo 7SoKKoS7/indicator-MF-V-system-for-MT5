@@ -1,4 +1,8 @@
-#pragma once
+// MQL5 does not support #pragma once reliably; use include guards
+#ifndef __MFV_ZIGZAGADAPTER_MQH__
+#define __MFV_ZIGZAGADAPTER_MQH__
+
+#include "Config.mqh"
 #include "SimpleSwing.mqh"   // fallback
 
 class ZigZagAdapter {
@@ -48,5 +52,7 @@ private:
       return INVALID_HANDLE; // адаптер сообщит PivotEngine, который переключится на fallback
    }
 };
+
+#endif // __MFV_ZIGZAGADAPTER_MQH__
 
 
