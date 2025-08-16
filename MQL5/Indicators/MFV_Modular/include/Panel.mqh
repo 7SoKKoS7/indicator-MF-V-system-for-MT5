@@ -34,10 +34,11 @@ class PanelView {
          ObjectSetString(0, name, OBJPROP_TEXT, text);
    }
 
+   inline string Uni(ushort code) { return ShortToString(code); } // безопасный Unicode
    string Arrow(TrendDir d)
    {
-      if(d==TD_Up)   return CharToString(0x2191); // ↑
-      if(d==TD_Down) return CharToString(0x2193); // ↓
+      if(d==TD_Up)   return Uni((ushort)0x2191); // ↑
+      if(d==TD_Down) return Uni((ushort)0x2193); // ↓
       return "-";
    }
    string DirText(TrendDir d){ return (d==TD_Up?"UP":(d==TD_Down?"DOWN":"FLAT")); }
