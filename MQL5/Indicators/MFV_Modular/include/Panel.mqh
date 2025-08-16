@@ -4,7 +4,7 @@
 class PanelView {
    MFVConfig *cfg;
    string kPanelLabel;
-private:
+ private:
    int LineHeight() const { return ((cfg && cfg.PanelFontSize>0)?cfg.PanelFontSize:11) + 4; }
 
    bool EnsureLabelAt(const int idx)
@@ -40,30 +40,56 @@ private:
       return "-";
    }
    string DirText(TrendDir d){ return (d==TD_Up?"UP":(d==TD_Down?"DOWN":"FLAT")); }
-   string FormatTf(const TFTrend &t, const string name)
+   string FormatTrendSeg(const string name, const TFTrend &t)
    {
-      string d = DirText(t.dir);
-      if(t.dir==TD_Flat) return name+":"+d; // без (0)
-      return name+":"+d+"("+IntegerToString(t.strength)+")";
+      string base = (cfg && cfg.PanelUseArrows ? Arrow(t.dir) : DirText(t.dir));
+      if(cfg && cfg.PanelShowStrength && t.dir!=TD_Flat)
+         base = base + "(" + IntegerToString(t.strength) + ")";
+      return name + ":" + base;
    }
-public:
+   string Px(double v)
+   {
+      if(v<=0.0) return "—";
+      return DoubleToString(v, _Digits);
+   }
+   string FormatPivotLine(const string label, const DualPivot &dp)
+   {
+      return StringFormat("%s: H=%s | L=%s", label, Px(dp.High), Px(dp.Low));
+   }
+ public:
    void Init(MFVConfig &c){ cfg=&c; kPanelLabel = "MFV_Panel_Status"; }
-   void Render(const TrendEngine& te, const PivotEngine&, const Filters&,
+   void Render(const TrendEngine& te, const PivotEngine& pe, const Filters&,
                const Breakout&, const Signals&, const MarketData&,
                const MFVConfig&, const MFVState&)
    {
+      // Строка трендов
       TFTrend th1(te.Get(PERIOD_H1));
       TFTrend tm15(te.Get(PERIOD_M15));
       TFTrend tm5(te.Get(PERIOD_M5));
-      auto fmt = [&](const char* name, const TFTrend& t)->string
-      {
-         string base = (cfg && cfg.PanelUseArrows ? Arrow(t.dir) : DirText(t.dir));
-         if(cfg && cfg.PanelShowStrength && t.dir!=TD_Flat)
-            base = base + "(" + IntegerToString(t.strength) + ")";
-         return StringFormat("%s:%s", name, base);
-      };
-      string line = fmt("H1", th1) + "  " + fmt("M15", tm15) + "  " + fmt("M5", tm5);
-      if(EnsureLabelAt(0)) UpdateLabelTextAt(0, line);
+      string line0 = FormatTrendSeg("H1", th1) + "  " + FormatTrendSeg("M15", tm15) + "  " + FormatTrendSeg("M5", tm5);
+      if(EnsureLabelAt(0)) UpdateLabelTextAt(0, line0);
+
+      // Pivot-строки
+      int idx = 1;
+      DualPivot d5 = pe.ComputeNow(PERIOD_M5);
+      if(EnsureLabelAt(idx)) UpdateLabelTextAt(idx++, FormatPivotLine("Pivot M5", d5));
+
+      DualPivot d15 = pe.ComputeNow(PERIOD_M15);
+      if(EnsureLabelAt(idx)) UpdateLabelTextAt(idx++, FormatPivotLine("Pivot M15", d15));
+
+      DualPivot d1h = pe.ComputeNow(PERIOD_H1);
+      if(EnsureLabelAt(idx)) UpdateLabelTextAt(idx++, FormatPivotLine("Pivot H1", d1h));
+
+      if(cfg && cfg.ShowPivotH4)
+        {
+         DualPivot d4 = pe.ComputeNow(PERIOD_H4);
+         if(EnsureLabelAt(idx)) UpdateLabelTextAt(idx++, FormatPivotLine("Pivot H4", d4));
+        }
+      if(cfg && cfg.ShowPivotD1)
+        {
+         DualPivot dD = pe.ComputeNow(PERIOD_D1);
+         if(EnsureLabelAt(idx)) UpdateLabelTextAt(idx++, FormatPivotLine("Pivot D1", dD));
+        }
    }
    void Cleanup()
    {
