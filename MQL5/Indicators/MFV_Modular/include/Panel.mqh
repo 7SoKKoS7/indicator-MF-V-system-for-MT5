@@ -71,28 +71,24 @@ class PanelView {
 
       // Pivot-строки
       int idx = 1;
+      // ComputeNow уже делает: Online → Cache → Fast, поэтому просто используем результат
       DualPivot d5(pe.ComputeNow(PERIOD_M5));
-      if(d5.High<=0.0 && d5.Low<=0.0) d5 = pe.Cached(PERIOD_M5);
       if(EnsureLabelAt(idx)) UpdateLabelTextAt(idx++, FormatPivotLine("Pivot M5", d5));
 
       DualPivot d15(pe.ComputeNow(PERIOD_M15));
-      if(d15.High<=0.0 && d15.Low<=0.0) d15 = pe.Cached(PERIOD_M15);
       if(EnsureLabelAt(idx)) UpdateLabelTextAt(idx++, FormatPivotLine("Pivot M15", d15));
 
       DualPivot d1h(pe.ComputeNow(PERIOD_H1));
-      if(d1h.High<=0.0 && d1h.Low<=0.0) d1h = pe.Cached(PERIOD_H1);
       if(EnsureLabelAt(idx)) UpdateLabelTextAt(idx++, FormatPivotLine("Pivot H1", d1h));
 
       if(cfg && cfg.ShowPivotH4)
         {
          DualPivot d4(pe.ComputeNow(PERIOD_H4));
-         if(d4.High<=0.0 && d4.Low<=0.0) d4 = pe.Cached(PERIOD_H4);
          if(EnsureLabelAt(idx)) UpdateLabelTextAt(idx++, FormatPivotLine("Pivot H4", d4));
         }
       if(cfg && cfg.ShowPivotD1)
         {
          DualPivot dD(pe.ComputeNow(PERIOD_D1));
-         if(dD.High<=0.0 && dD.Low<=0.0) dD = pe.Cached(PERIOD_D1);
          if(EnsureLabelAt(idx)) UpdateLabelTextAt(idx++, FormatPivotLine("Pivot D1", dD));
         }
    }

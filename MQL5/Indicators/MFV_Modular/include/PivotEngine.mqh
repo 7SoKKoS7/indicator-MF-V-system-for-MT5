@@ -2,6 +2,7 @@
 #define __MFV_PIVOTENGINE_MQH__
 
 #include "ZigZagAdapter.mqh"
+#include "FastPivot.mqh"   // быстрый приблизительный расчёт (fallback)
 #include "SimpleSwing.mqh"
 
 class MarketData; // forward decl
@@ -25,6 +26,8 @@ class PivotEngine {
    // Последние вычисленные пивоты по каждому ТФ.
    // Используются как мгновенный источник значений при старте/переключении ТФ.
    DualPivot cacheM5, cacheM15, cacheH1, cacheH4, cacheD1;
+   // Время последнего обновления кэша по каждому ТФ (для троттлинга/диагностики)
+   datetime tsM5, tsM15, tsH1, tsH4, tsD1;
  public:
    void Init(MarketData *m, MFVConfig *c){ md=m; cfg=c; zz.Init(_Symbol, cfg); }
    // Back-compat для существующих вызовов с ссылками
@@ -88,11 +91,11 @@ class PivotEngine {
          d.ts   = (datetime)(long)GlobalVariableGet(key(sym,tfs[i],"TS"));
          switch(tfs[i])
            {
-            case PERIOD_M5:  cacheM5  = d; break;
-            case PERIOD_M15: cacheM15 = d; break;
-            case PERIOD_H1:  cacheH1  = d; break;
-            case PERIOD_H4:  cacheH4  = d; break;
-            case PERIOD_D1:  cacheD1  = d; break;
+            case PERIOD_M5:  cacheM5  = d; tsM5=d.ts; break;
+            case PERIOD_M15: cacheM15 = d; tsM15=d.ts; break;
+            case PERIOD_H1:  cacheH1  = d; tsH1=d.ts; break;
+            case PERIOD_H4:  cacheH4  = d; tsH4=d.ts; break;
+            case PERIOD_D1:  cacheD1  = d; tsD1=d.ts; break;
            }
         }
      }
@@ -113,66 +116,94 @@ class PivotEngine {
    DualPivot computeForTf(ENUM_TIMEFRAMES tf)
    {
       DualPivot dp; // по умолчанию нули
-      // Только закрытый бар (shift=1)
+
+      // 1) Онлайн ZigZag (если хендл готов) → читаем буферы и обновляем кэш
       if(cfg!=NULL && cfg.PivotAlgorithm==Pivot_ZigZag)
       {
          int h = zz.Handle(tf);
          if(h==INVALID_HANDLE) h = zz.Ensure(tf); // попытка создать хендл, если его ещё нет
-         if(h == INVALID_HANDLE)
-            return dp; // нет онлайн-данных, отдаём нули (кэш покажет UI)
-
-         const int N = 300;
-         // ZigZag_Fixed: SetIndexBuffer(0=main,1=HighMap,2=LowMap)
-         const int BUF_ZZ = 0, BUF_HIGH = 1, BUF_LOW = 2;
-         double highBuf[]; double lowBuf[];
-         ArraySetAsSeries(highBuf, true); ArraySetAsSeries(lowBuf, true);
-         int hc = CopyBuffer(h, BUF_HIGH, 1, N, highBuf);
-         int lc = CopyBuffer(h, BUF_LOW,  1, N, lowBuf);
-         if(hc>0 || lc>0)
+         if(h != INVALID_HANDLE && BarsCalculated(h) >= 0)
          {
-            double pivotH = 0.0, pivotL = 0.0;
-            int shiftH = 0, shiftL = 0;
-            bool foundH = false, foundL = false;
-            // ZigZag кладёт 0.0 при отсутствии точки, поэтому проверяем > 0.0
-            for(int i=0; i<hc; ++i){ if(highBuf[i] > 0.0){ pivotH = highBuf[i]; shiftH = 1+i; foundH=true; break; } }
-            for(int i=0; i<lc; ++i){ if(lowBuf[i]  > 0.0){ pivotL = lowBuf[i];  shiftL = 1+i; foundL=true; break; } }
-
-            if(foundH || foundL)
+            const int N = 300;
+            // ZigZag_Fixed: SetIndexBuffer(0=main,1=HighMap,2=LowMap)
+            const int BUF_ZZ = 0, BUF_HIGH = 1, BUF_LOW = 2;
+            double highBuf[]; double lowBuf[];
+            ArraySetAsSeries(highBuf, true); ArraySetAsSeries(lowBuf, true);
+            int hc = CopyBuffer(h, BUF_HIGH, 1, N, highBuf);
+            int lc = CopyBuffer(h, BUF_LOW,  1, N, lowBuf);
+            if(hc>0 || lc>0)
             {
-               int ls = 0; // last swing sign
-               if(foundH && foundL){ if(shiftH < shiftL) ls = +1; else if(shiftL < shiftH) ls = -1; else ls = 0; }
-               else if(foundH) ls = +1;
-               else if(foundL) ls = -1;
+               double pivotH = 0.0, pivotL = 0.0;
+               int shiftH = 0, shiftL = 0;
+               bool foundH = false, foundL = false;
+               // ZigZag кладёт 0.0 при отсутствии точки, поэтому проверяем > 0.0
+               for(int i=0; i<hc; ++i){ if(highBuf[i] > 0.0){ pivotH = highBuf[i]; shiftH = 1+i; foundH=true; break; } }
+               for(int i=0; i<lc; ++i){ if(lowBuf[i]  > 0.0){ pivotL = lowBuf[i];  shiftL = 1+i; foundL=true; break; } }
 
-               int shiftTs = 0;
-               if(foundH && foundL) shiftTs = (shiftH < shiftL ? shiftH : shiftL);
-               else if(foundH) shiftTs = shiftH;
-               else if(foundL) shiftTs = shiftL;
+               if(foundH || foundL)
+               {
+                  int ls = 0; // last swing sign
+                  if(foundH && foundL){ if(shiftH < shiftL) ls = +1; else if(shiftL < shiftH) ls = -1; else ls = 0; }
+                  else if(foundH) ls = +1;
+                  else if(foundL) ls = -1;
 
-               datetime ts = (shiftTs>0 ? iTime(_Symbol, tf, shiftTs) : (datetime)0);
+                  int shiftTs = 0;
+                  if(foundH && foundL) shiftTs = (shiftH < shiftL ? shiftH : shiftL);
+                  else if(foundH) shiftTs = shiftH;
+                  else if(foundL) shiftTs = shiftL;
 
-               // Упаковать результат и положить в кэш для данного TF
-               DualPivot out;
-               out.High      = pivotH;
-               out.Low       = pivotL;
-               out.lastSwing = ls;
-               out.ts        = ts;
+                  datetime ts = (shiftTs>0 ? iTime(_Symbol, tf, shiftTs) : (datetime)TimeCurrent());
 
-               switch(tf)
-                 {
-                  case PERIOD_M5:  cacheM5  = out; break;
-                  case PERIOD_M15: cacheM15 = out; break;
-                  case PERIOD_H1:  cacheH1  = out; break;
-                  case PERIOD_H4:  cacheH4  = out; break;
-                  case PERIOD_D1:  cacheD1  = out; break;
-                 }
+                  // Упаковать результат и положить в кэш для данного TF
+                  DualPivot out;
+                  out.High      = pivotH;
+                  out.Low       = pivotL;
+                  out.lastSwing = ls;
+                  out.ts        = ts;
 
-               return out;
+                  switch(tf)
+                    {
+                     case PERIOD_M5:  cacheM5  = out; tsM5 = ts; break;
+                     case PERIOD_M15: cacheM15 = out; tsM15= ts; break;
+                     case PERIOD_H1:  cacheH1  = out; tsH1 = ts; break;
+                     case PERIOD_H4:  cacheH4  = out; tsH4 = ts; break;
+                     case PERIOD_D1:  cacheD1  = out; tsD1 = ts; break;
+                    }
+
+                  return out;
+               }
             }
          }
       }
 
-      // Нет онлайн-значений — отдаём пустой dp (кэш покажет UI)
+      // 2) Кэш (если есть значения) → мгновенно отдаём в UI
+      {
+         DualPivot c = Cached(tf);
+         if(c.High>0.0 || c.Low>0.0)
+            return c;
+      }
+
+      // 3) Быстрый приблизительный расчёт (FastPivot) → тёплый старт
+      {
+         DualPivot fp;
+         if(md!=NULL && cfg!=NULL && FastPivot::Compute(tf, *cfg, *md, fp))
+         {
+            // сохранить в кэш и вернуть fp
+            datetime ts = (datetime)TimeCurrent();
+            fp.ts = ts;
+            switch(tf)
+              {
+               case PERIOD_M5:  cacheM5  = fp; tsM5 = ts; break;
+               case PERIOD_M15: cacheM15 = fp; tsM15= ts; break;
+               case PERIOD_H1:  cacheH1  = fp; tsH1 = ts; break;
+               case PERIOD_H4:  cacheH4  = fp; tsH4 = ts; break;
+               case PERIOD_D1:  cacheD1  = fp; tsD1 = ts; break;
+              }
+            return fp;
+         }
+      }
+
+      // Нет онлайн-значений и быстрый расчёт не дал результата — отдаём пустой dp
       return dp;
    }
 };
