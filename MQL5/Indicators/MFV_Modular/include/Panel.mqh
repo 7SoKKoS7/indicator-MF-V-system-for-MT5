@@ -33,6 +33,12 @@ private:
          ObjectSetString(0, name, OBJPROP_TEXT, text);
    }
 
+   string Arrow(TrendDir d)
+   {
+      if(d==TD_Up)   return "\xE2\x86\x91"; // Unicode up arrow
+      if(d==TD_Down) return "\xE2\x86\x93"; // Unicode down arrow
+      return "-";
+   }
    string DirText(TrendDir d){ return (d==TD_Up?"UP":(d==TD_Down?"DOWN":"FLAT")); }
    string FormatTf(const TFTrend &t, const string name)
    {
@@ -49,7 +55,14 @@ public:
       TFTrend th1(te.Get(PERIOD_H1));
       TFTrend tm15(te.Get(PERIOD_M15));
       TFTrend tm5(te.Get(PERIOD_M5));
-      string line = FormatTf(th1, "H1") + "  " + FormatTf(tm15, "M15") + "  " + FormatTf(tm5, "M5");
+      auto fmt = [&](const char* name, const TFTrend& t)->string
+      {
+         string base = (cfg && cfg.PanelUseArrows ? Arrow(t.dir) : DirText(t.dir));
+         if(cfg && cfg.PanelShowStrength && t.dir!=TD_Flat)
+            base = base + "(" + IntegerToString(t.strength) + ")";
+         return StringFormat("%s:%s", name, base);
+      };
+      string line = fmt("H1", th1) + "  " + fmt("M15", tm15) + "  " + fmt("M5", tm5);
       if(EnsureLabelAt(0)) UpdateLabelTextAt(0, line);
    }
    void Cleanup()

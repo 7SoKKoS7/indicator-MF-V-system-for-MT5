@@ -11,7 +11,7 @@ class DrawLayer {
 private:
    string NamePivot(ENUM_TIMEFRAMES tf, bool isHigh)
    {
-      string t = (tf==PERIOD_H1 ? "H1" : (tf==PERIOD_M5 ? "M5" : "M15"));
+      string t = (tf==PERIOD_H1 ? "H1" : (tf==PERIOD_M5 ? "M5" : (tf==PERIOD_M15 ? "M15" : (tf==PERIOD_H4 ? "H4" : (tf==PERIOD_D1 ? "D1" : "?")))));
       return StringFormat("MFV_Pivot_%s_%s", t, (isHigh?"H":"L"));
    }
 
@@ -77,6 +77,30 @@ public:
       if(d.Low >0.0) EnsureHLine(nL, d.Low);
       UpdateHLine(nH, d.High);
       UpdateHLine(nL, d.Low);
+
+      // H4 (опционально)
+      if(cfg && cfg.ShowPivotH4)
+      {
+         DualPivot d4(pe.ComputeNow(PERIOD_H4));
+         string n4H = NamePivot(PERIOD_H4, true);
+         string n4L = NamePivot(PERIOD_H4, false);
+         if(d4.High>0.0) EnsureHLine(n4H, d4.High);
+         if(d4.Low >0.0) EnsureHLine(n4L, d4.Low);
+         UpdateHLine(n4H, d4.High);
+         UpdateHLine(n4L, d4.Low);
+      }
+
+      // D1 (опционально)
+      if(cfg && cfg.ShowPivotD1)
+      {
+         DualPivot dD1(pe.ComputeNow(PERIOD_D1));
+         string nD1H = NamePivot(PERIOD_D1, true);
+         string nD1L = NamePivot(PERIOD_D1, false);
+         if(dD1.High>0.0) EnsureHLine(nD1H, dD1.High);
+         if(dD1.Low >0.0) EnsureHLine(nD1L, dD1.Low);
+         UpdateHLine(nD1H, dD1.High);
+         UpdateHLine(nD1L, dD1.Low);
+      }
    }
    void DrawSignal(const SignalDecision &sd){ /* позже: стрелки и т.п. */ }
    void Cleanup()

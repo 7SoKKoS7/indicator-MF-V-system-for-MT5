@@ -22,7 +22,7 @@ class PivotEngine {
    MarketData *md; MFVConfig *cfg;
    ZigZagAdapter zz;
    DualPivot m_h1, m_m15, m_m5;
-public:
+ public:
    void Init(MarketData *m, MFVConfig *c){ md=m; cfg=c; zz.Init(_Symbol, cfg); }
    // Back-compat для существующих вызовов с ссылками
    void Init(MarketData &m, MFVConfig &c){ Init(&m, &c); }
@@ -37,7 +37,9 @@ public:
       if(tf==PERIOD_M5) return m_m5;
       return m_m15;
    }
-private:
+   // быстрый геттер для произвольного TF без хранения
+   DualPivot ComputeNow(ENUM_TIMEFRAMES tf) { return computeForTf(tf); }
+ private:
    DualPivot computeForTf(ENUM_TIMEFRAMES tf)
    {
       DualPivot dp;

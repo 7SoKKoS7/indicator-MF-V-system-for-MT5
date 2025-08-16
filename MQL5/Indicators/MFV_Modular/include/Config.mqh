@@ -19,6 +19,10 @@ public:
    color  PivotColorL;
    ENUM_LINE_STYLE PivotLineStyle;
    int    PivotLineWidth;
+   bool   PanelUseArrows;
+   bool   PanelShowStrength;
+   bool   ShowPivotH4;
+   bool   ShowPivotD1;
    // ZigZag / Pivot settings
    int    ZZ_Depth;
    int    ZZ_Deviation;
@@ -42,6 +46,10 @@ public:
       PivotColorL         = ::PivotColorL;
       PivotLineStyle      = ::PivotLineStyle;
       PivotLineWidth      = ::PivotLineWidth;
+      PanelUseArrows      = ::PanelUseArrows;
+      PanelShowStrength   = ::PanelShowStrength;
+      ShowPivotH4         = ::ShowPivotH4;
+      ShowPivotD1         = ::ShowPivotD1;
       // значения по умолчанию для ZigZag/пивотов
       ZZ_Depth            = 12;
       ZZ_Deviation        = 5;
