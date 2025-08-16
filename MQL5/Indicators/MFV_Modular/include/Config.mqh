@@ -1,6 +1,8 @@
 #ifndef __MFV_CONFIG_MQH__
 #define __MFV_CONFIG_MQH__
 
+enum PivotAlgo { Pivot_ZigZag=0, Pivot_Swing=1 };
+
 class MFVConfig {
 public:
    bool   UseRussian;
@@ -11,6 +13,11 @@ public:
    int    H1ClosesNeeded;
    int    RetestWindowM15, RetestWindowM5;
    double RetestTolATR_M15, RetestTolATR_M5;
+   // ZigZag / Pivot settings
+   int    ZZ_Depth;
+   int    ZZ_Deviation;
+   int    ZZ_Backstep;
+   PivotAlgo PivotAlgorithm;
    void LoadInputs(){
       // начальные значения; позже можно читать из input-параметров
       UseRussian          = ::UseRussian;
@@ -23,6 +30,11 @@ public:
       RetestWindowM5      = ::RetestWindowM5;
       RetestTolATR_M15    = ::RetestTolATR_M15;
       RetestTolATR_M5     = ::RetestTolATR_M5;
+      // значения по умолчанию для ZigZag/пивотов
+      ZZ_Depth            = 12;
+      ZZ_Deviation        = 5;
+      ZZ_Backstep         = 3;
+      PivotAlgorithm      = Pivot_ZigZag;
    }
 };
 
