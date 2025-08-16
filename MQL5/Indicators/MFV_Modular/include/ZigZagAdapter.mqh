@@ -26,6 +26,16 @@ public:
       if(tf==PERIOD_D1)  return zzD1;
       return zzM15;
    }
+   // Прогреть все таймфреймы, чтобы при первом рендере уже были валидные хендлы.
+   // Это уменьшает задержку при первом появлении линий/данных.
+   void PreWarmAll()
+     {
+      Ensure(PERIOD_M5);
+      Ensure(PERIOD_M15);
+      Ensure(PERIOD_H1);
+      Ensure(PERIOD_H4);
+      Ensure(PERIOD_D1);
+     }
    // on-demand ensure для произвольного TF
    int Ensure(ENUM_TIMEFRAMES tf){
       if(tf==PERIOD_H1){ zzH1=ensureZZ(tf,zzH1); return zzH1; }

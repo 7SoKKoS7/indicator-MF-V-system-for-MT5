@@ -51,8 +51,9 @@ public:
    void Init(MFVConfig &c){ cfg=&c; }
    void SyncPivots(PivotEngine &pe)
    {
-      // H1
-      DualPivot d(pe.Get(PERIOD_H1));
+      // H1: онлайн, иначе кэш
+      DualPivot d(pe.ComputeNow(PERIOD_H1));
+      if(d.High<=0.0 && d.Low<=0.0) d = pe.Cached(PERIOD_H1);
       string nH = NamePivot(PERIOD_H1, true);
       string nL = NamePivot(PERIOD_H1, false);
       if(d.High>0.0) EnsureHLine(nH, d.High);
@@ -61,7 +62,8 @@ public:
       UpdateHLine(nL, d.Low);
 
       // M15
-      d = DualPivot(pe.Get(PERIOD_M15));
+      d = DualPivot(pe.ComputeNow(PERIOD_M15));
+      if(d.High<=0.0 && d.Low<=0.0) d = pe.Cached(PERIOD_M15);
       nH = NamePivot(PERIOD_M15, true);
       nL = NamePivot(PERIOD_M15, false);
       if(d.High>0.0) EnsureHLine(nH, d.High);
@@ -70,7 +72,8 @@ public:
       UpdateHLine(nL, d.Low);
 
       // M5
-      d = DualPivot(pe.Get(PERIOD_M5));
+      d = DualPivot(pe.ComputeNow(PERIOD_M5));
+      if(d.High<=0.0 && d.Low<=0.0) d = pe.Cached(PERIOD_M5);
       nH = NamePivot(PERIOD_M5, true);
       nL = NamePivot(PERIOD_M5, false);
       if(d.High>0.0) EnsureHLine(nH, d.High);
@@ -82,6 +85,7 @@ public:
       if(cfg && cfg.ShowPivotH4)
       {
          DualPivot d4(pe.ComputeNow(PERIOD_H4));
+         if(d4.High<=0.0 && d4.Low<=0.0) d4 = pe.Cached(PERIOD_H4);
          string n4H = NamePivot(PERIOD_H4, true);
          string n4L = NamePivot(PERIOD_H4, false);
          if(d4.High>0.0) EnsureHLine(n4H, d4.High);
@@ -94,6 +98,7 @@ public:
       if(cfg && cfg.ShowPivotD1)
       {
          DualPivot dD1(pe.ComputeNow(PERIOD_D1));
+         if(dD1.High<=0.0 && dD1.Low<=0.0) dD1 = pe.Cached(PERIOD_D1);
          string nD1H = NamePivot(PERIOD_D1, true);
          string nD1L = NamePivot(PERIOD_D1, false);
          if(dD1.High>0.0) EnsureHLine(nD1H, dD1.High);

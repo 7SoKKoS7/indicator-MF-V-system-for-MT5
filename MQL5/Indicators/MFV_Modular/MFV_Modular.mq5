@@ -60,6 +60,10 @@ int OnInit()
    gSG.Init(gTE, gBR, gFL, gCfg, gSt);
    gDR.Init(gCfg);
    gPV.Init(gCfg);
+   // Загрузить кэш пивотов из Global Variables
+   gPE.LoadCacheGV(_Symbol);
+   // Прогреть ZigZag-хендлы для всех TF, чтобы уменьшить задержку первого расчёта
+   gPE.PreWarmAll();
    EventSetTimer(1);
    GM.Init("modular");
    return(INIT_SUCCEEDED);
@@ -68,6 +72,8 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   // Сохранить последние пивоты, чтобы при следующем запуске показать мгновенно
+   gPE.SaveCacheGV(_Symbol);
    gDR.Cleanup();
    gPV.Cleanup();
    GM.Close();
