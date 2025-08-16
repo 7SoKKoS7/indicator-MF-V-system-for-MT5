@@ -53,6 +53,7 @@ public:
    {
       // H1: теперь ComputeNow сам делает fallback (Online → Cache → Fast)
       DualPivot d(pe.ComputeNow(PERIOD_H1));
+      if(d.High<=0.0 && d.Low<=0.0) d = pe.Cached(PERIOD_H1);  // редкий случай, но пусть будет
       string nH = NamePivot(PERIOD_H1, true);
       string nL = NamePivot(PERIOD_H1, false);
       if(d.High>0.0) EnsureHLine(nH, d.High);
@@ -62,6 +63,7 @@ public:
 
       // M15
       d = DualPivot(pe.ComputeNow(PERIOD_M15));
+      if(d.High<=0.0 && d.Low<=0.0) d = pe.Cached(PERIOD_M15);
       nH = NamePivot(PERIOD_M15, true);
       nL = NamePivot(PERIOD_M15, false);
       if(d.High>0.0) EnsureHLine(nH, d.High);
@@ -71,6 +73,7 @@ public:
 
       // M5
       d = DualPivot(pe.ComputeNow(PERIOD_M5));
+      if(d.High<=0.0 && d.Low<=0.0) d = pe.Cached(PERIOD_M5);
       nH = NamePivot(PERIOD_M5, true);
       nL = NamePivot(PERIOD_M5, false);
       if(d.High>0.0) EnsureHLine(nH, d.High);

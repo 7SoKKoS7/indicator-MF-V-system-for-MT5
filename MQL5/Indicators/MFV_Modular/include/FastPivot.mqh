@@ -62,11 +62,13 @@ namespace FastPivot
          break;
         }
 
-      // 6) Грубая фильтрация по девиации, чтобы не отдавать "шум"
+      // 6) Мягкая фильтрация: если H и L слишком близко — не отбрасываем оба.
+      // Оставляем ближайшую к текущей цене точку, вторую нулим.
       if(outHigh>0.0 && outLow>0.0 && (outHigh - outLow) < devPts)
         {
-         // слишком близко — оставим только более "выраженную" точку
-         if(shH < shL) outLow = 0.0; else outHigh = 0.0;
+         const double px = iClose(_Symbol, tf, 1);
+         if(MathAbs(outHigh - px) <= MathAbs(px - outLow)) outLow = 0.0;
+         else outHigh = 0.0;
         }
 
       if(outHigh<=0.0 && outLow<=0.0) return false;

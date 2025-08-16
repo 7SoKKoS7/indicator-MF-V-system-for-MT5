@@ -189,7 +189,20 @@ class PivotEngine {
          double fh=0.0, fl=0.0; datetime fts=0;
          if(md!=NULL && cfg!=NULL && FastPivot::Compute(tf, *cfg, *md, fh, fl, fts))
          {
-            DualPivot fp; fp.High = fh; fp.Low = fl; fp.lastSwing = 0; fp.ts = fts;
+            DualPivot fp; fp.High = fh; fp.Low = fl; fp.ts = fts; fp.lastSwing = 0;
+            // Заполнить lastSwing эвристикой: какой уровень ближе к текущей цене.
+            int inferred = 0;
+            if(fp.High>0.0 || fp.Low>0.0)
+              {
+               const double px = iClose(_Symbol, tf, 1);
+               if(fp.High>0.0 && fp.Low>0.0)
+                  inferred = (MathAbs(px - fp.High) <= MathAbs(px - fp.Low)) ? +1 : -1;
+               else if(fp.High>0.0)
+                  inferred = +1;
+               else if(fp.Low>0.0)
+                  inferred = -1;
+              }
+            fp.lastSwing = inferred;   // теперь TrendEngine сможет дать направление
             // записать в кэш
             switch(tf){
               case PERIOD_M5:  cacheM5  = fp; break;
