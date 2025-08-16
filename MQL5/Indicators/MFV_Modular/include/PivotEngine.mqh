@@ -122,7 +122,9 @@ class PivotEngine {
       {
          int h = zz.Handle(tf);
          if(h==INVALID_HANDLE) h = zz.Ensure(tf); // попытка создать хендл, если его ещё нет
-         if(h != INVALID_HANDLE && BarsCalculated(h) >= 0)
+         int bc = (h==INVALID_HANDLE ? -1 : BarsCalculated(h));
+         // избегаем блокировок и долгих расчётов, пока индикатор «тёплый»
+         if(h != INVALID_HANDLE && bc >= 10)
          {
             const int N = 300;
             // ZigZag_Fixed: SetIndexBuffer(0=main,1=HighMap,2=LowMap)

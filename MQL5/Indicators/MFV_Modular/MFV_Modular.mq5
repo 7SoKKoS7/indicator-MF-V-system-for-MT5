@@ -117,12 +117,20 @@ int OnCalculate(const int rates_total,
 void OnTimer()
 {
    // Мягкий прогрев: держим хендлы живыми и обновляем кэш по мере готовности
+   static int tick = 0; ++tick; if(tick > 3600) tick = 0;
    gPE.PreWarmAll();               // гарантирует живые хендлы ZigZag
-   gPE.ComputeNow(PERIOD_M5);      // освежить кэш, если онлайн готов
+
+   // Лёгкие ТФ — каждую секунду
+   gPE.ComputeNow(PERIOD_M5);
    gPE.ComputeNow(PERIOD_M15);
    gPE.ComputeNow(PERIOD_H1);
-   if(gCfg.ShowPivotH4) gPE.ComputeNow(PERIOD_H4);
-   if(gCfg.ShowPivotD1) gPE.ComputeNow(PERIOD_D1);
+
+   // H4 — раз в 2 секунды
+   if(gCfg.ShowPivotH4 && (tick % 2)==0) gPE.ComputeNow(PERIOD_H4);
+
+   // D1 — раз в 5 секунд
+   if(gCfg.ShowPivotD1 && (tick % 5)==0) gPE.ComputeNow(PERIOD_D1);
+
    // Рендер панели
    gPV.Render(gTE, gPE, gFL, gBR, gSG, gMD, gCfg, gSt);
 }

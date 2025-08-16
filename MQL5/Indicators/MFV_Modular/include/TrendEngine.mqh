@@ -43,17 +43,21 @@ class TrendEngine {
       TrendDir dirM15= DirByPivot(PERIOD_M15, dM15);
       TrendDir dirM5 = DirByPivot(PERIOD_M5, dM5);
 
-      int sH1 = Sign(dirH1);
-      int sM15= Sign(dirM15);
-      int sM5 = Sign(dirM5);
-      int sum = sH1 + sM15 + sM5; // -3..+3
-      int maj = (sum>0)? +1 : (sum<0)? -1 : 0;
-      int strength = 0;
-      if(maj!=0){ strength = (sH1==maj) + (sM15==maj) + (sM5==maj); }
+      // Перс-ТП сила: сколько ТФ согласны с направлением данного ТФ (не считаем FLAT)
+      TFTrend th1; th1.dir = dirH1;
+      TFTrend tm15; tm15.dir = dirM15;
+      TFTrend tm5; tm5.dir = dirM5;
+      TrendDir dirs[3]; dirs[0]=th1.dir; dirs[1]=tm15.dir; dirs[2]=tm5.dir;
+      int sH1=0, sM15=0, sM5=0;
+      for(int i=0;i<3;++i) if(dirs[i]==th1.dir && th1.dir!=TD_Flat) ++sH1;
+      for(int i=0;i<3;++i) if(dirs[i]==tm15.dir && tm15.dir!=TD_Flat) ++sM15;
+      for(int i=0;i<3;++i) if(dirs[i]==tm5.dir && tm5.dir!=TD_Flat) ++sM5;
 
-      h1.dir = dirH1; h1.strength = strength; h1.ts = TimeCurrent();
-      m15.dir= dirM15; m15.strength= strength; m15.ts= TimeCurrent();
-      m5.dir = dirM5; m5.strength = strength; m5.ts = TimeCurrent();
+      th1.strength  = sH1; th1.ts  = TimeCurrent();
+      tm15.strength = sM15; tm15.ts = TimeCurrent();
+      tm5.strength  = sM5; tm5.ts  = TimeCurrent();
+
+      h1 = th1; m15 = tm15; m5 = tm5;
      }
    TFTrend Get(ENUM_TIMEFRAMES tf) const {
       if(tf==PERIOD_H1) return h1;

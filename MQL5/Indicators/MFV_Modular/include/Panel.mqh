@@ -6,10 +6,11 @@ class PanelView {
    string kPanelLabel;
  private:
    int LineHeight() const { return ((cfg && cfg.PanelFontSize>0)?cfg.PanelFontSize:11) + 4; }
+   string LabelName(const int idx) const { return StringFormat("MFV_Panel_Status_%d", idx); }
 
    bool EnsureLabelAt(const int idx)
    {
-      string name = StringFormat("MFV_Panel_Status_%d", idx);
+      string name = LabelName(idx);
       if(ObjectFind(0, name) < 0)
       {
          if(!ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0)) return false;
@@ -19,7 +20,7 @@ class PanelView {
       // обновляем шрифт/позицию на лету
       ObjectSetInteger(0, name, OBJPROP_FONTSIZE, (cfg?cfg.PanelFontSize:11));
       ObjectSetInteger(0, name, OBJPROP_YDISTANCE, (cfg?cfg.PanelYOffset:24) + idx * LineHeight());
-      ObjectSetString (0, name, OBJPROP_FONT, "Tahoma");
+      ObjectSetString (0, name, OBJPROP_FONT, "Segoe UI Symbol");
       ObjectSetInteger(0, name, OBJPROP_COLOR, clrWhite);
       ObjectSetInteger(0, name, OBJPROP_BACK,  false);
       return true;
@@ -27,7 +28,7 @@ class PanelView {
 
    void UpdateLabelTextAt(const int idx, const string text)
    {
-      string name = StringFormat("MFV_Panel_Status_%d", idx);
+      string name = LabelName(idx);
       string cur = ObjectGetString(0, name, OBJPROP_TEXT);
       if(cur != text)
          ObjectSetString(0, name, OBJPROP_TEXT, text);
@@ -35,8 +36,8 @@ class PanelView {
 
    string Arrow(TrendDir d)
    {
-      if(d==TD_Up)   return "\xE2\x86\x91"; // Unicode up arrow
-      if(d==TD_Down) return "\xE2\x86\x93"; // Unicode down arrow
+      if(d==TD_Up)   return CharToString(0x2191); // ↑
+      if(d==TD_Down) return CharToString(0x2193); // ↓
       return "-";
    }
    string DirText(TrendDir d){ return (d==TD_Up?"UP":(d==TD_Down?"DOWN":"FLAT")); }
@@ -91,6 +92,9 @@ class PanelView {
          DualPivot dD(pe.ComputeNow(PERIOD_D1));
          if(EnsureLabelAt(idx)) UpdateLabelTextAt(idx++, FormatPivotLine("Pivot D1", dD));
         }
+
+      // удалить хвостовые лейблы
+      CleanupFromIndex(idx);
    }
    void Cleanup()
    {
@@ -103,6 +107,16 @@ class PanelView {
             ObjectDelete(0, nm);
       }
    }
+
+   void CleanupFromIndex(const int startIdx)
+    {
+     for(int i=startIdx; ; ++i)
+       {
+        string n = LabelName(i);
+        if(ObjectFind(0, n) < 0) break;
+        ObjectDelete(0, n);
+       }
+    }
 };
 
 #endif // __MFV_PANEL_MQH__
