@@ -4,7 +4,8 @@
 enum TrendDir { TD_Flat=0, TD_Up=1, TD_Down=2 };
 
 struct TFTrend { TrendDir dir; int strength; datetime ts;
-   TFTrend():dir(TD_Flat),strength(0),ts(0){} };
+   TFTrend():dir(TD_Flat),strength(0),ts(0){}
+   TFTrend(const TFTrend &o){ dir=o.dir; strength=o.strength; ts=o.ts; } };
 
 enum SigClass { Sig_None=0, Sig_EarlyBuy, Sig_EarlySell, Sig_NormalBuy, Sig_NormalSell,
                 Sig_StrongBuy, Sig_StrongSell, Sig_EarlyExit, Sig_HardExit, Sig_Reversal };

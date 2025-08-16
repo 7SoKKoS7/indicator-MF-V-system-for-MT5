@@ -79,7 +79,7 @@ int OnCalculate(const int rates_total,
    if(rates_total<=1) return(0);
    gMD.Refresh();
    gPE.UpdateAllTF();
-   gTE.UpdateAllTF();
+   gTE.UpdateAllTF(gPE);
    gBR.Update();
    gFL.Update();
    SignalDecision sd(gSG.DecideAndUpdate());
