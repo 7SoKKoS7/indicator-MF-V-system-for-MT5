@@ -185,20 +185,19 @@ class PivotEngine {
 
       // 3) Быстрый приблизительный расчёт (FastPivot) → тёплый старт
       {
-         DualPivot fp;
-         if(md!=NULL && cfg!=NULL && FastPivot::Compute(tf, *cfg, *md, fp))
+         // FastPivot теперь отдаёт только High/Low/time без знания DualPivot.
+         double fh=0.0, fl=0.0; datetime fts=0;
+         if(md!=NULL && cfg!=NULL && FastPivot::Compute(tf, *cfg, *md, fh, fl, fts))
          {
-            // сохранить в кэш и вернуть fp
-            datetime ts = (datetime)TimeCurrent();
-            fp.ts = ts;
-            switch(tf)
-              {
-               case PERIOD_M5:  cacheM5  = fp; tsM5 = ts; break;
-               case PERIOD_M15: cacheM15 = fp; tsM15= ts; break;
-               case PERIOD_H1:  cacheH1  = fp; tsH1 = ts; break;
-               case PERIOD_H4:  cacheH4  = fp; tsH4 = ts; break;
-               case PERIOD_D1:  cacheD1  = fp; tsD1 = ts; break;
-              }
+            DualPivot fp; fp.High = fh; fp.Low = fl; fp.lastSwing = 0; fp.ts = fts;
+            // записать в кэш
+            switch(tf){
+              case PERIOD_M5:  cacheM5  = fp; break;
+              case PERIOD_M15: cacheM15 = fp; break;
+              case PERIOD_H1:  cacheH1  = fp; break;
+              case PERIOD_H4:  cacheH4  = fp; break;
+              case PERIOD_D1:  cacheD1  = fp; break;
+            }
             return fp;
          }
       }
