@@ -58,7 +58,7 @@ class PanelView {
    }
  public:
    void Init(MFVConfig &c){ cfg=&c; kPanelLabel = "MFV_Panel_Status"; }
-   void Render(const TrendEngine& te, const PivotEngine& pe, const Filters&,
+   void Render(const TrendEngine& te, PivotEngine& pe, const Filters&,
                const Breakout&, const Signals&, const MarketData&,
                const MFVConfig&, const MFVState&)
    {
@@ -71,23 +71,23 @@ class PanelView {
 
       // Pivot-строки
       int idx = 1;
-      DualPivot d5 = pe.ComputeNow(PERIOD_M5);
+      DualPivot d5(pe.ComputeNow(PERIOD_M5));
       if(EnsureLabelAt(idx)) UpdateLabelTextAt(idx++, FormatPivotLine("Pivot M5", d5));
 
-      DualPivot d15 = pe.ComputeNow(PERIOD_M15);
+      DualPivot d15(pe.ComputeNow(PERIOD_M15));
       if(EnsureLabelAt(idx)) UpdateLabelTextAt(idx++, FormatPivotLine("Pivot M15", d15));
 
-      DualPivot d1h = pe.ComputeNow(PERIOD_H1);
+      DualPivot d1h(pe.ComputeNow(PERIOD_H1));
       if(EnsureLabelAt(idx)) UpdateLabelTextAt(idx++, FormatPivotLine("Pivot H1", d1h));
 
       if(cfg && cfg.ShowPivotH4)
         {
-         DualPivot d4 = pe.ComputeNow(PERIOD_H4);
+         DualPivot d4(pe.ComputeNow(PERIOD_H4));
          if(EnsureLabelAt(idx)) UpdateLabelTextAt(idx++, FormatPivotLine("Pivot H4", d4));
         }
       if(cfg && cfg.ShowPivotD1)
         {
-         DualPivot dD = pe.ComputeNow(PERIOD_D1);
+         DualPivot dD(pe.ComputeNow(PERIOD_D1));
          if(EnsureLabelAt(idx)) UpdateLabelTextAt(idx++, FormatPivotLine("Pivot D1", dD));
         }
    }

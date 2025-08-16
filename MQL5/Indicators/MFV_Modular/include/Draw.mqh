@@ -49,7 +49,7 @@ private:
    }
 public:
    void Init(MFVConfig &c){ cfg=&c; }
-   void SyncPivots(const PivotEngine &pe)
+   void SyncPivots(PivotEngine &pe)
    {
       // H1
       DualPivot d(pe.Get(PERIOD_H1));
