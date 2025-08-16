@@ -15,7 +15,8 @@ struct SignalDecision { SigClass klass; datetime t; double price; string note;
 struct FilterVerdict { int downgrade; bool block; string reasons;
    FilterVerdict():downgrade(0),block(false),reasons(""){} };
 
-struct MFVState {
+class MFVState {
+public:
    datetime lastArrowTime;
    datetime lastReverseTime;
    TFTrend H1; TFTrend M15; TFTrend M5;

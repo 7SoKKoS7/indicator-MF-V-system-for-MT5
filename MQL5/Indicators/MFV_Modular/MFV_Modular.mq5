@@ -43,13 +43,13 @@ int OnInit()
 {
    gCfg.LoadInputs();
    gMD.Init(_Symbol, PERIOD_CURRENT);
-   gPE.Init(&gMD, &gCfg);
-   gTE.Init(&gPE, &gCfg);
-   gBR.Init(&gPE, &gMD, &gCfg);
-   gFL.Init(&gMD, &gCfg);
-   gSG.Init(&gTE, &gBR, &gFL, &gCfg, &gSt);
-   gDR.Init(&gCfg);
-   gPV.Init(&gCfg);
+   gPE.Init(gMD, gCfg);
+   gTE.Init(gPE, gCfg);
+   gBR.Init(gPE, gMD, gCfg);
+   gFL.Init(gMD, gCfg);
+   gSG.Init(gTE, gBR, gFL, gCfg, gSt);
+   gDR.Init(gCfg);
+   gPV.Init(gCfg);
    EventSetTimer(1);
    GM.Init("modular");
    return(INIT_SUCCEEDED);
