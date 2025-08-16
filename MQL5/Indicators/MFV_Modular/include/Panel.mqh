@@ -3,7 +3,7 @@
 
 class PanelView {
    MFVConfig *cfg;
-   const string kPanelLabel = "MFV_Panel_Status";
+   string kPanelLabel;
 private:
    bool EnsureLabel()
    {
@@ -14,15 +14,11 @@ private:
          ObjectSetInteger(0, kPanelLabel, OBJPROP_XDISTANCE, 8);
          ObjectSetInteger(0, kPanelLabel, OBJPROP_YDISTANCE, 8);
          ObjectSetString (0, kPanelLabel, OBJPROP_FONT, "Tahoma");
-         ObjectSetInteger(0, kPanelLabel, OBJPROP_FONTSIZE, (cfg?cfg.PanelFontSize:11));
          ObjectSetInteger(0, kPanelLabel, OBJPROP_COLOR, clrWhite);
          ObjectSetInteger(0, kPanelLabel, OBJPROP_BACK,  false);
       }
-      else
-      {
-         // обновляем размер на лету, если пользователь поменял инпут
-         ObjectSetInteger(0, kPanelLabel, OBJPROP_FONTSIZE, (cfg?cfg.PanelFontSize:11));
-      }
+      // обновляем размер на лету, если пользователь поменял инпут
+      ObjectSetInteger(0, kPanelLabel, OBJPROP_FONTSIZE, (cfg?cfg.PanelFontSize:11));
       return true;
    }
 
@@ -41,7 +37,7 @@ private:
       return name+":"+d+"("+IntegerToString(t.strength)+")";
    }
 public:
-   void Init(MFVConfig &c){ cfg=&c; }
+   void Init(MFVConfig &c){ cfg=&c; kPanelLabel = "MFV_Panel_Status"; }
    void Render(const TrendEngine& te, const PivotEngine&, const Filters&,
                const Breakout&, const Signals&, const MarketData&,
                const MFVConfig&, const MFVState&)
