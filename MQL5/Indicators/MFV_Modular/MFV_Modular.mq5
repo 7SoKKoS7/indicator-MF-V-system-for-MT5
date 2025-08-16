@@ -82,7 +82,7 @@ int OnCalculate(const int rates_total,
    gTE.UpdateAllTF();
    gBR.Update();
    gFL.Update();
-   SignalDecision sd = gSG.DecideAndUpdate();
+   SignalDecision sd(gSG.DecideAndUpdate());
    GM.LogRaw(
       PERIOD_M15,
       iTime(_Symbol, PERIOD_M15, 1),

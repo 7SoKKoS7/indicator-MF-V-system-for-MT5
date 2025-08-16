@@ -39,7 +39,7 @@ public:
          DoubleToString(pH,_Digits),
          DoubleToString(pL,_Digits),
          trend, sig, note);
-﻿#endif
+#endif
    }
 };
 

@@ -13,7 +13,9 @@ public:
       st=&s;
    }
    SignalDecision DecideAndUpdate(){
-      SignalDecision sd; st->lastStatus="stub"; return sd;
+      SignalDecision sd;
+      (*st).lastStatus = "stub";
+      return sd;
    }
 };
 

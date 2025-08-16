@@ -9,8 +9,27 @@ struct TFTrend { TrendDir dir; int strength; datetime ts;
 enum SigClass { Sig_None=0, Sig_EarlyBuy, Sig_EarlySell, Sig_NormalBuy, Sig_NormalSell,
                 Sig_StrongBuy, Sig_StrongSell, Sig_EarlyExit, Sig_HardExit, Sig_Reversal };
 
-struct SignalDecision { SigClass klass; datetime t; double price; string note;
-   SignalDecision():klass(Sig_None),t(0),price(0),note(""){} };
+struct SignalDecision {
+   SigClass klass; datetime t; double price; string note;
+
+   // Явный конструктор по умолчанию
+   SignalDecision()
+   {
+      klass = Sig_None;
+      t     = 0;
+      price = 0.0;
+      note  = "";
+   }
+
+   // Копирующий конструктор
+   SignalDecision(const SignalDecision &other)
+   {
+      klass = other.klass;
+      t     = other.t;
+      price = other.price;
+      note  = other.note;
+   }
+};
 
 struct FilterVerdict { int downgrade; bool block; string reasons;
    FilterVerdict():downgrade(0),block(false),reasons(""){} };
