@@ -17,6 +17,8 @@ private:
 
    bool EnsureHLine(const string name, const double price)
    {
+      if(price <= 0.0)
+         return false;
       if(ObjectFind(0, name) >= 0)
          return true;
       bool ok = ObjectCreate(0, name, OBJ_HLINE, 0, 0, price);
@@ -30,6 +32,7 @@ private:
 
    void UpdateHLine(const string name, const double price)
    {
+      if(ObjectFind(0, name) < 0) return;
       double cur = ObjectGetDouble(0, name, OBJPROP_PRICE);
       const double tol = _Point * 0.1;
       if(MathAbs(cur - price) > tol)
@@ -43,22 +46,28 @@ public:
       DualPivot d = pe.Get(PERIOD_H1);
       string nH = NamePivot(PERIOD_H1, true);
       string nL = NamePivot(PERIOD_H1, false);
-      if(EnsureHLine(nH, d.High)) UpdateHLine(nH, d.High);
-      if(EnsureHLine(nL, d.Low))  UpdateHLine(nL, d.Low);
+      if(d.High>0.0) EnsureHLine(nH, d.High);
+      if(d.Low >0.0) EnsureHLine(nL, d.Low);
+      UpdateHLine(nH, d.High);
+      UpdateHLine(nL, d.Low);
 
       // M15
       d = pe.Get(PERIOD_M15);
       nH = NamePivot(PERIOD_M15, true);
       nL = NamePivot(PERIOD_M15, false);
-      if(EnsureHLine(nH, d.High)) UpdateHLine(nH, d.High);
-      if(EnsureHLine(nL, d.Low))  UpdateHLine(nL, d.Low);
+      if(d.High>0.0) EnsureHLine(nH, d.High);
+      if(d.Low >0.0) EnsureHLine(nL, d.Low);
+      UpdateHLine(nH, d.High);
+      UpdateHLine(nL, d.Low);
 
       // M5
       d = pe.Get(PERIOD_M5);
       nH = NamePivot(PERIOD_M5, true);
       nL = NamePivot(PERIOD_M5, false);
-      if(EnsureHLine(nH, d.High)) UpdateHLine(nH, d.High);
-      if(EnsureHLine(nL, d.Low))  UpdateHLine(nL, d.Low);
+      if(d.High>0.0) EnsureHLine(nH, d.High);
+      if(d.Low >0.0) EnsureHLine(nL, d.Low);
+      UpdateHLine(nH, d.High);
+      UpdateHLine(nL, d.Low);
    }
    void DrawSignal(const SignalDecision &sd){ /* позже: стрелки и т.п. */ }
    void Cleanup()

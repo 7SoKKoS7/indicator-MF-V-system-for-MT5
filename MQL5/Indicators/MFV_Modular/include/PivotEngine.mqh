@@ -40,6 +40,7 @@ private:
          if(h != INVALID_HANDLE)
          {
             const int N = 300;
+            // ZigZag_Fixed: SetIndexBuffer(0=main,1=HighMap,2=LowMap)
             const int BUF_ZZ = 0, BUF_HIGH = 1, BUF_LOW = 2;
             double highBuf[]; double lowBuf[];
             ArraySetAsSeries(highBuf, true); ArraySetAsSeries(lowBuf, true);
@@ -50,8 +51,9 @@ private:
                double pivotH = 0.0, pivotL = 0.0;
                int shiftH = 0, shiftL = 0;
                bool foundH = false, foundL = false;
-               for(int i=0; i<hc; ++i){ if(highBuf[i] != EMPTY_VALUE){ pivotH = highBuf[i]; shiftH = 1+i; foundH=true; break; } }
-               for(int i=0; i<lc; ++i){ if(lowBuf[i]  != EMPTY_VALUE){ pivotL = lowBuf[i];  shiftL = 1+i; foundL=true; break; } }
+               // ZigZag кладёт 0.0 при отсутствии точки, поэтому проверяем > 0.0
+               for(int i=0; i<hc; ++i){ if(highBuf[i] > 0.0){ pivotH = highBuf[i]; shiftH = 1+i; foundH=true; break; } }
+               for(int i=0; i<lc; ++i){ if(lowBuf[i]  > 0.0){ pivotL = lowBuf[i];  shiftL = 1+i; foundL=true; break; } }
 
                int lastSwing = 0;
                if(foundH && foundL){ if(shiftH < shiftL) lastSwing = +1; else if(shiftL < shiftH) lastSwing = -1; else lastSwing = 0; }
