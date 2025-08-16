@@ -24,9 +24,9 @@ private:
       bool ok = ObjectCreate(0, name, OBJ_HLINE, 0, 0, price);
       if(!ok) return false;
       bool isHigh = (StringFind(name, "_H", StringLen(name)-2) == StringLen(name)-2);
-      ObjectSetInteger(0, name, OBJPROP_COLOR, isHigh ? clrLime : clrYellow);
-      ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DOT);
-      ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
+      ObjectSetInteger(0, name, OBJPROP_COLOR, isHigh ? (cfg?cfg.PivotColorH:clrLime) : (cfg?cfg.PivotColorL:clrYellow));
+      ObjectSetInteger(0, name, OBJPROP_STYLE, (cfg?cfg.PivotLineStyle:STYLE_DOT));
+      ObjectSetInteger(0, name, OBJPROP_WIDTH, (cfg?cfg.PivotLineWidth:1));
       ObjectSetInteger(0, name, OBJPROP_BACK,  true);
       return true;
    }
@@ -38,6 +38,14 @@ private:
       const double tol = _Point * 0.1;
       if(MathAbs(cur - price) > tol)
          ObjectSetDouble(0, name, OBJPROP_PRICE, price);
+      // обновляем стиль/ширину/цвет на лету согласно cfg
+      ObjectSetInteger(0, name, OBJPROP_STYLE, (cfg?cfg.PivotLineStyle:STYLE_DOT));
+      ObjectSetInteger(0, name, OBJPROP_WIDTH, (cfg?cfg.PivotLineWidth:1));
+      bool isHigh = (StringFind(name, "_H", StringLen(name)-2) == StringLen(name)-2);
+      color desired = isHigh ? (cfg?cfg.PivotColorH:clrLime) : (cfg?cfg.PivotColorL:clrYellow);
+      color curCol = (color)ObjectGetInteger(0, name, OBJPROP_COLOR);
+      if(curCol != desired)
+         ObjectSetInteger(0, name, OBJPROP_COLOR, desired);
    }
 public:
    void Init(MFVConfig &c){ cfg=&c; }

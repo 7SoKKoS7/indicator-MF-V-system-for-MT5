@@ -5,28 +5,32 @@ class PanelView {
    MFVConfig *cfg;
    string kPanelLabel;
 private:
-   bool EnsureLabel()
+   int LineHeight() const { return ((cfg && cfg.PanelFontSize>0)?cfg.PanelFontSize:11) + 4; }
+
+   bool EnsureLabelAt(const int idx)
    {
-      if(ObjectFind(0, kPanelLabel) < 0)
+      string name = StringFormat("MFV_Panel_Status_%d", idx);
+      if(ObjectFind(0, name) < 0)
       {
-         if(!ObjectCreate(0, kPanelLabel, OBJ_LABEL, 0, 0, 0)) return false;
-         ObjectSetInteger(0, kPanelLabel, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-         ObjectSetInteger(0, kPanelLabel, OBJPROP_XDISTANCE, 8);
-         ObjectSetInteger(0, kPanelLabel, OBJPROP_YDISTANCE, 8);
-         ObjectSetString (0, kPanelLabel, OBJPROP_FONT, "Tahoma");
-         ObjectSetInteger(0, kPanelLabel, OBJPROP_COLOR, clrWhite);
-         ObjectSetInteger(0, kPanelLabel, OBJPROP_BACK,  false);
+         if(!ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0)) return false;
+         ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+         ObjectSetInteger(0, name, OBJPROP_XDISTANCE, 8);
       }
-      // обновляем размер на лету, если пользователь поменял инпут
-      ObjectSetInteger(0, kPanelLabel, OBJPROP_FONTSIZE, (cfg?cfg.PanelFontSize:11));
+      // обновляем шрифт/позицию на лету
+      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, (cfg?cfg.PanelFontSize:11));
+      ObjectSetInteger(0, name, OBJPROP_YDISTANCE, (cfg?cfg.PanelYOffset:24) + idx * LineHeight());
+      ObjectSetString (0, name, OBJPROP_FONT, "Tahoma");
+      ObjectSetInteger(0, name, OBJPROP_COLOR, clrWhite);
+      ObjectSetInteger(0, name, OBJPROP_BACK,  false);
       return true;
    }
 
-   void UpdateLabelText(const string text)
+   void UpdateLabelTextAt(const int idx, const string text)
    {
-      string cur = ObjectGetString(0, kPanelLabel, OBJPROP_TEXT);
+      string name = StringFormat("MFV_Panel_Status_%d", idx);
+      string cur = ObjectGetString(0, name, OBJPROP_TEXT);
       if(cur != text)
-         ObjectSetString(0, kPanelLabel, OBJPROP_TEXT, text);
+         ObjectSetString(0, name, OBJPROP_TEXT, text);
    }
 
    string DirText(TrendDir d){ return (d==TD_Up?"UP":(d==TD_Down?"DOWN":"FLAT")); }
@@ -46,9 +50,19 @@ public:
       TFTrend tm15(te.Get(PERIOD_M15));
       TFTrend tm5(te.Get(PERIOD_M5));
       string line = FormatTf(th1, "H1") + "  " + FormatTf(tm15, "M15") + "  " + FormatTf(tm5, "M5");
-      if(EnsureLabel()) UpdateLabelText(line);
+      if(EnsureLabelAt(0)) UpdateLabelTextAt(0, line);
    }
-   void Cleanup(){ if(ObjectFind(0, kPanelLabel) >= 0) ObjectDelete(0, kPanelLabel); }
+   void Cleanup()
+   {
+      // удалить все лейблы панели
+      int total = ObjectsTotal(0, 0, -1);
+      for(int i=total-1;i>=0;--i)
+      {
+         string nm = ObjectName(0, i, 0);
+         if(StringFind(nm, "MFV_Panel_Status_", 0) == 0)
+            ObjectDelete(0, nm);
+      }
+   }
 };
 
 #endif // __MFV_PANEL_MQH__

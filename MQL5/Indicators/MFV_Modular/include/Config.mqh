@@ -14,6 +14,11 @@ public:
    int    RetestWindowM15, RetestWindowM5;
    double RetestTolATR_M15, RetestTolATR_M5;
    int    PanelFontSize;
+   int    PanelYOffset;
+   color  PivotColorH;
+   color  PivotColorL;
+   ENUM_LINE_STYLE PivotLineStyle;
+   int    PivotLineWidth;
    // ZigZag / Pivot settings
    int    ZZ_Depth;
    int    ZZ_Deviation;
@@ -32,6 +37,11 @@ public:
       RetestTolATR_M15    = ::RetestTolATR_M15;
       RetestTolATR_M5     = ::RetestTolATR_M5;
       PanelFontSize       = ::PanelFontSize;
+      PanelYOffset        = ::PanelYOffset;
+      PivotColorH         = ::PivotColorH;
+      PivotColorL         = ::PivotColorL;
+      PivotLineStyle      = ::PivotLineStyle;
+      PivotLineWidth      = ::PivotLineWidth;
       // значения по умолчанию для ZigZag/пивотов
       ZZ_Depth            = 12;
       ZZ_Deviation        = 5;

@@ -13,6 +13,11 @@ input int    RetestWindowM5       = 24;
 input double RetestTolATR_M15     = 0.30;
 input double RetestTolATR_M5      = 0.50;
 input int    PanelFontSize        = 11;   // размер шрифта панели
+input int            PanelYOffset   = 24;          // отступ панели сверху (px)
+input color          PivotColorH    = clrLime;     // цвет линии High
+input color          PivotColorL    = clrYellow;   // цвет линии Low
+input ENUM_LINE_STYLE PivotLineStyle = STYLE_DOT;  // стиль линии (сплошная/пунктир)
+input int            PivotLineWidth = 1;           // толщина линии
 
 #include "include/Config.mqh"
 #include "include/State.mqh"
