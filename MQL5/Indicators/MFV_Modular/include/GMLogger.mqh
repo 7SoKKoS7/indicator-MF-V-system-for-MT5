@@ -30,7 +30,7 @@ public:
                double pH, double pL, const string trend,
                const string sig, const string note)
    {
-   #if defined(MFV_GM_LOG) && (MFV_GM_LOG!=0)
+#ifdef MFV_GM_LOG
       if(h==INVALID_HANDLE) return;
       FileWrite(h,
          TimeToString(t, TIME_DATE|TIME_SECONDS),
@@ -39,7 +39,7 @@ public:
          DoubleToString(pH,_Digits),
          DoubleToString(pL,_Digits),
          trend, sig, note);
-   #endif
+﻿#endif
    }
 };
 
