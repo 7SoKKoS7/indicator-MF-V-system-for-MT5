@@ -43,7 +43,7 @@ public:
    void SyncPivots(const PivotEngine &pe)
    {
       // H1
-      DualPivot d = pe.Get(PERIOD_H1);
+      DualPivot d(pe.Get(PERIOD_H1));
       string nH = NamePivot(PERIOD_H1, true);
       string nL = NamePivot(PERIOD_H1, false);
       if(d.High>0.0) EnsureHLine(nH, d.High);
@@ -52,7 +52,7 @@ public:
       UpdateHLine(nL, d.Low);
 
       // M15
-      d = pe.Get(PERIOD_M15);
+      d = DualPivot(pe.Get(PERIOD_M15));
       nH = NamePivot(PERIOD_M15, true);
       nL = NamePivot(PERIOD_M15, false);
       if(d.High>0.0) EnsureHLine(nH, d.High);
@@ -61,7 +61,7 @@ public:
       UpdateHLine(nL, d.Low);
 
       // M5
-      d = pe.Get(PERIOD_M5);
+      d = DualPivot(pe.Get(PERIOD_M5));
       nH = NamePivot(PERIOD_M5, true);
       nL = NamePivot(PERIOD_M5, false);
       if(d.High>0.0) EnsureHLine(nH, d.High);
@@ -72,14 +72,7 @@ public:
    void DrawSignal(const SignalDecision &sd){ /* позже: стрелки и т.п. */ }
    void Cleanup()
    {
-      const string prefix = "MFV_Pivot_";
-      int total = (int)ObjectTotal(0);
-      for(int i=total-1; i>=0; --i)
-      {
-         string name = ObjectName(0, i);
-         if(StringFind(name, prefix) == 0)
-            ObjectDelete(0, name);
-      }
+      ObjectsDeleteAll(0, 0, "MFV_Pivot_");
    }
 };
 

@@ -7,8 +7,16 @@
 class MarketData; // forward decl
 class MFVConfig;  // forward decl
 
-struct DualPivot { double High; double Low; int lastSwing; datetime ts;
-   DualPivot():High(0),Low(0),lastSwing(0),ts(0){} };
+struct DualPivot
+  {
+   double   High;
+   double   Low;
+   int      lastSwing;
+   datetime ts;
+
+   DualPivot(){ High=0.0; Low=0.0; lastSwing=0; ts=0; }
+   DualPivot(const DualPivot &o){ High=o.High; Low=o.Low; lastSwing=o.lastSwing; ts=o.ts; }
+  };
 
 class PivotEngine {
    MarketData *md; MFVConfig *cfg;
