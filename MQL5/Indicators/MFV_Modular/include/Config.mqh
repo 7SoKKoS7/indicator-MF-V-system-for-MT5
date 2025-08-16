@@ -13,6 +13,7 @@ public:
    int    H1ClosesNeeded;
    int    RetestWindowM15, RetestWindowM5;
    double RetestTolATR_M15, RetestTolATR_M5;
+   int    PanelFontSize;
    // ZigZag / Pivot settings
    int    ZZ_Depth;
    int    ZZ_Deviation;
@@ -30,6 +31,7 @@ public:
       RetestWindowM5      = ::RetestWindowM5;
       RetestTolATR_M15    = ::RetestTolATR_M15;
       RetestTolATR_M5     = ::RetestTolATR_M5;
+      PanelFontSize       = ::PanelFontSize;
       // значения по умолчанию для ZigZag/пивотов
       ZZ_Depth            = 12;
       ZZ_Deviation        = 5;

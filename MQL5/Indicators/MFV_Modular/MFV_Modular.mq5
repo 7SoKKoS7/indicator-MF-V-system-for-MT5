@@ -12,6 +12,7 @@ input int    RetestWindowM15      = 12;
 input int    RetestWindowM5       = 24;
 input double RetestTolATR_M15     = 0.30;
 input double RetestTolATR_M5      = 0.50;
+input int    PanelFontSize        = 11;   // размер шрифта панели
 
 #include "include/Config.mqh"
 #include "include/State.mqh"

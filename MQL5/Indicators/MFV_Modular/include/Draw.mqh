@@ -23,7 +23,8 @@ private:
          return true;
       bool ok = ObjectCreate(0, name, OBJ_HLINE, 0, 0, price);
       if(!ok) return false;
-      ObjectSetInteger(0, name, OBJPROP_COLOR, clrSilver);
+      bool isHigh = (StringFind(name, "_H", StringLen(name)-2) == StringLen(name)-2);
+      ObjectSetInteger(0, name, OBJPROP_COLOR, isHigh ? clrLime : clrYellow);
       ObjectSetInteger(0, name, OBJPROP_STYLE, STYLE_DOT);
       ObjectSetInteger(0, name, OBJPROP_WIDTH, 1);
       ObjectSetInteger(0, name, OBJPROP_BACK,  true);
