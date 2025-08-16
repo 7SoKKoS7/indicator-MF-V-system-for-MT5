@@ -72,7 +72,14 @@ public:
    void DrawSignal(const SignalDecision &sd){ /* позже: стрелки и т.п. */ }
    void Cleanup()
    {
-      ObjectsDeleteAll(0, 0, "MFV_Pivot_");
+      // ObjectsDeleteAll в MQL5 не принимает префикс, поэтому удаляем вручную
+      int total = ObjectsTotal(0, 0, -1);
+      for(int i = total - 1; i >= 0; --i)
+      {
+         string nm = ObjectName(0, i, 0);
+         if(StringFind(nm, "MFV_Pivot_", 0) == 0)
+            ObjectDelete(0, nm);
+      }
    }
 };
 
